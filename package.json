@@ -1,0 +1,18 @@
+{
+  "name": "cursorconnect",
+  "version": "1.0.0",
+  "description": "<p align=\"center\">   <h1 align=\"center\">CursorConnect</h1>   <p align=\"center\">     <strong>The Python SDK for Cursor Cloud Agents</strong>   </p>   <p align=\"center\">     Create, orchestrate, and stream AI coding agents from Python.     <br />     One import. One API key. Full control.   </p> </p>",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@cursor/sdk": "^1.0.11"
+  }
+}
