@@ -21,6 +21,7 @@
   <a href="#two-runtimes-one-interface">Runtimes</a> &middot;
   <a href="#design-philosophy">Design Philosophy</a> &middot;
   <a href="#examples">Examples</a> &middot;
+  <a href="#technical-documentation">Technical Docs</a> &middot;
   <a href="#api-reference">API Reference</a>
 </p>
 
@@ -60,7 +61,7 @@ pip install -e .
 
 **Requirements:** Python 3.8+ and `requests>=2.28` (installed automatically).
 
-**For local agents only:** Node.js 18+ and the `@cursor/sdk` npm package must be available on your system. Cloud agents have no additional requirements.
+**For local agents only:** Node.js 18+ and the `@cursor/sdk` npm package must be available where CursorConnect is running. In a source checkout, run `npm install` from the repository root so the bundled bridge can resolve `@cursor/sdk`. Cloud agents have no additional requirements.
 
 ---
 
@@ -90,7 +91,7 @@ agent = Agent.create(
 
 ### Local Runtime
 
-Local agents run as a subprocess on your machine via a Node.js bridge to the TypeScript `@cursor/sdk`. The agent operates directly on your local filesystem, which means it can access private files, work offline, and integrate with local tooling, dev servers, and databases that aren't reachable from the cloud.
+Local agents run as a subprocess on your machine via a Node.js bridge to the TypeScript `@cursor/sdk`. The agent operates directly on your local filesystem, which means it can access private files and integrate with local tooling, dev servers, and databases that aren't reachable from the cloud.
 
 ```python
 from cursorconnect import Agent
@@ -111,6 +112,12 @@ if run:
 
 Same `Agent` class, same `Run` interface, same `stream()` and `wait()` methods. The SDK detects that you passed `local` instead of `cloud` and routes through the Node.js bridge automatically. Under the hood, the bridge communicates with the TypeScript SDK over JSON-RPC via stdin/stdout, handles streaming, and automatically restarts if the subprocess crashes.
 
+Local runtime constraints:
+
+- `archive()`, `unarchive()`, `delete()`, `reload()`, and artifact APIs are cloud-only and raise `UnsupportedRunOperationError` for local agents.
+- `LocalRun.stream()` is synchronous from Python's perspective, but it is backed by an async bridge stream and yields events incrementally.
+- The Node bridge inherits `CURSOR_API_KEY` from the environment, or from `api_key=` when provided.
+
 ### When to Use Which
 
 | | Cloud | Local |
@@ -119,7 +126,20 @@ Same `Agent` class, same `Run` interface, same `stream()` and `wait()` methods. 
 | **Filesystem** | Clones from GitHub | Direct access to local files |
 | **Network** | Runs on Cursor's infra | Runs on your machine |
 | **Best for** | CI/CD pipelines, batch operations across repos, PR automation | Interactive development, private codebases, local tool integration |
-| **Offline** | No | Yes |
+| **Offline** | No | Not generally; local files are used, but agent execution still depends on Cursor SDK/model access |
+
+---
+
+## Technical Documentation
+
+For maintainers and advanced SDK users, the module-oriented guide maps the
+package structure to implementation responsibilities and supported workflows:
+
+- [CursorConnect Module Guide](docs/module-guide.md) covers `agent`, `run`,
+  `_bridge`, `mesh`, `cursor`, `artifact`, `types`, and `exceptions`.
+- The guide includes local bridge architecture, Mesh constraints, account API
+  rate-limit notes, error-handling contracts, compatibility-shim guidance, and
+  targeted test commands for common maintenance work.
 
 ---
 
@@ -461,13 +481,13 @@ from cursorconnect import Agent
 from cursorconnect.types import CloudOptions
 import time
 
-    run = Agent.prompt(
-        message="Run the full test suite and fix any failing tests",
-        cloud=CloudOptions(
-            repos=[{"url": "https://github.com/your-org/app"}],
-        ),
-        model="claude-sonnet-4-6",
-    )
+run = Agent.prompt(
+    message="Run the full test suite and fix any failing tests",
+    cloud=CloudOptions(
+        repos=[{"url": "https://github.com/your-org/app"}],
+    ),
+    model="claude-sonnet-4-6",
+)
 
 def on_status(new_status):
     timestamp = time.strftime("%H:%M:%S")
