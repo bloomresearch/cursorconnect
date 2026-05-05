@@ -55,6 +55,9 @@ Repository = "https://github.com/bloomresearch/cursorconnect"
 Issues = "https://github.com/bloomresearch/cursorconnect/issues"
 Changelog = "https://github.com/bloomresearch/cursorconnect/releases"
 
+[project.scripts]
+cursorconnect = "cursorconnect.cli:main"
+
 [project.optional-dependencies]
 test = [
     "python-dotenv",

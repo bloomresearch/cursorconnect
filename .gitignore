@@ -29,12 +29,17 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Node
+# Node (including auto-installed SDK in _bridge/)
 node_modules/
+package-lock.json
 npm-debug.log
 yarn-debug.log
 yarn-error.log
 .pnpm-debug.log
+
+# Auto-generated package.json from npm --prefix install
+cursorconnect/_bridge/package.json
+cursorconnect/_bridge/package-lock.json
 
 # Jupyter Notebook
 .ipynb_checkpoints

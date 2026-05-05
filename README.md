@@ -60,7 +60,14 @@ pip install -e .
 
 **Requirements:** Python 3.8+ and `requests>=2.28` (installed automatically).
 
-**For local agents only:** Node.js 18+ and the `@cursor/sdk` npm package must be available on your system. Cloud agents have no additional requirements.
+**For local agents only:** Node.js 18+ must be installed on your system. The first time you create a local agent, CursorConnect automatically installs `@cursor/sdk` into a private `node_modules` inside the package -- no manual npm setup required. You can also run the setup proactively:
+
+```bash
+cursorconnect setup-local    # check Node.js and install @cursor/sdk
+cursorconnect status         # show local runtime diagnostic info
+```
+
+Cloud agents have no additional requirements beyond Python and an API key.
 
 ---
 

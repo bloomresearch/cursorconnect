@@ -73,10 +73,10 @@ def _get_bridge(api_key: Optional[str] = None) -> "BridgeManager":
 
     with _bridge_lock:
         if not hasattr(_get_bridge, "_instance"):
-            bridge_js = os.path.join(
-                os.path.dirname(__file__), "_bridge", "bridge.js"
-            )
-            bridge = BridgeManager(bridge_js, api_key=api_key)
+            from ._bridge.setup import ensure_local_runtime
+
+            node_bin, bridge_js = ensure_local_runtime()
+            bridge = BridgeManager(bridge_js, node_bin=node_bin, api_key=api_key)
             bridge.start()
             _get_bridge._instance = bridge
     return _get_bridge._instance
