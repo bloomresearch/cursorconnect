@@ -32,7 +32,7 @@ from .cursor import Cursor
 from .run import Run
 from .mesh import Mesh
 from .artifact import Artifact
-from .types import CommonModels
+from .types import CommonModels, CloudOptions, LocalOptions, Conversation, RunProtocol
 from .exceptions import (
     CursorAgentError,
     CursorAPIError,
@@ -53,6 +53,10 @@ __all__ = [
     "Mesh",
     "Artifact",
     "CommonModels",
+    "CloudOptions",
+    "LocalOptions",
+    "Conversation",
+    "RunProtocol",
     "CursorClient",
     "CursorAPIError",
     "CursorAgentError",

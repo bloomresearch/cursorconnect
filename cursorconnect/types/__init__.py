@@ -54,6 +54,7 @@ from .updates import (
 from .conversation import (
     AssistantContent,
     ThinkingContent,
+    ToolCallContent,
     UserContent,
     ShellCommand,
     ShellOutput,
@@ -61,10 +62,13 @@ from .conversation import (
     AgentConversationTurn,
     ShellConversationTurn,
     ConversationTurn,
+    Conversation,
+    parse_conversation,
 )
 from .models import (
     CommonModels,
     ModelParameterValue,
+    ModelParameters,
     ModelSelection,
     ModelParameterDefinition,
     ModelVariant,
@@ -88,6 +92,7 @@ from .mesh import (
     MeshTask,
     MeshResult,
 )
+from .run_protocol import RunProtocol
 
 # Backward compatibility aliases for renamed account types
 SDKUser = User
@@ -145,6 +150,7 @@ __all__ = [
     # Conversation types
     "AssistantContent",
     "ThinkingContent",
+    "ToolCallContent",
     "UserContent",
     "ShellCommand",
     "ShellOutput",
@@ -152,9 +158,12 @@ __all__ = [
     "AgentConversationTurn",
     "ShellConversationTurn",
     "ConversationTurn",
+    "Conversation",
+    "parse_conversation",
     # Models
     "CommonModels",
     "ModelParameterValue",
+    "ModelParameters",
     "ModelSelection",
     "ModelParameterDefinition",
     "ModelVariant",
@@ -174,4 +183,6 @@ __all__ = [
     # Mesh
     "MeshTask",
     "MeshResult",
+    # Protocol
+    "RunProtocol",
 ]

@@ -112,9 +112,9 @@ class TestAgentCreate:
             Agent.create(api_key=None, prompt="test")  # type: ignore[arg-type]
 
     @pytest.mark.slow
-    def test_create_live_and_delete(self, api_key: str) -> None:
+    def test_create_live_and_delete(self, api_key: str, live_model: str) -> None:
         """Live: create an agent, verify it has an ID, then delete it."""
-        agent = Agent.create(api_key=api_key, prompt="echo 'test-lifecycle'")
+        agent = Agent.create(api_key=api_key, prompt="echo 'test-lifecycle'", model=live_model)
         try:
             assert agent.agent_id is not None
             assert agent.agent_id.startswith("bc-")
@@ -205,13 +205,13 @@ class TestAgentSendStream:
     ]
 
     def test_send_returns_run(self, mock_http, api_key: str) -> None:
-        """``Agent.send()`` returns a ``Run`` instance."""
-        from cursorconnect import Run
+        """``Agent.send()`` returns a ``RunProtocol`` instance."""
+        from cursorconnect import RunProtocol
 
         mock_http(MockResponse(_AGENT_PAYLOAD), MockResponse(_RUN_PAYLOAD))
         agent = Agent.create(api_key=api_key, prompt="init")
         run = agent.send("follow-up")
-        assert isinstance(run, Run)
+        assert isinstance(run, RunProtocol)
 
     def test_send_run_has_id(self, mock_http, api_key: str) -> None:
         """The returned ``Run`` has its ``id`` set from the API response."""
@@ -265,9 +265,9 @@ class TestAgentSendStream:
         assert "FINISHED" in statuses
 
     @pytest.mark.slow
-    def test_send_stream_live(self, api_key: str) -> None:
+    def test_send_stream_live(self, api_key: str, live_model: str) -> None:
         """Live: create an agent, send a message, consume the SSE stream."""
-        agent = Agent.create(api_key=api_key, prompt="Print the number 42 and stop.")
+        agent = Agent.create(api_key=api_key, prompt="Print the number 42 and stop.", model=live_model)
         try:
             run = agent.send("Confirm: just output the number.")
             msgs = list(run.stream())
@@ -285,13 +285,13 @@ class TestAgentInitialRun:
     """Unit tests for ``Agent.initial_run`` property."""
 
     def test_initial_run_returns_run(self, mock_http, api_key: str) -> None:
-        """``Agent.initial_run`` returns a ``Run`` instance if ``_latest_run_id`` is set."""
-        from cursorconnect import Run
+        """``Agent.initial_run`` returns a ``RunProtocol`` instance if ``_latest_run_id`` is set."""
+        from cursorconnect import RunProtocol
 
         mock_http(MockResponse(_AGENT_PAYLOAD))
         agent = Agent.create(api_key=api_key, prompt="init")
         run = agent.initial_run
-        assert isinstance(run, Run)
+        assert isinstance(run, RunProtocol)
         assert run.id == "run-abc"
 
     def test_initial_run_returns_none_if_missing(self, mock_http, api_key: str) -> None:
@@ -371,9 +371,9 @@ class TestAgentListArtifacts:
         assert agent.list_artifacts() == []
 
     @pytest.mark.slow
-    def test_list_artifacts_live(self, api_key: str) -> None:
+    def test_list_artifacts_live(self, api_key: str, live_model: str) -> None:
         """Live: list artifacts on a freshly created agent (expected to be empty)."""
-        agent = Agent.create(api_key=api_key, prompt="echo 'hello'")
+        agent = Agent.create(api_key=api_key, prompt="echo 'hello'", model=live_model)
         try:
             artifacts = agent.list_artifacts()
             assert isinstance(artifacts, list)
@@ -412,9 +412,9 @@ class TestAgentArchive:
         assert agent.status == "ARCHIVED"
 
     @pytest.mark.slow
-    def test_archive_live_and_cleanup(self, api_key: str) -> None:
+    def test_archive_live_and_cleanup(self, api_key: str, live_model: str) -> None:
         """Live: archive an agent, verify status, then delete it."""
-        agent = Agent.create(api_key=api_key, prompt="echo 'archive-test'")
+        agent = Agent.create(api_key=api_key, prompt="echo 'archive-test'", model=live_model)
         try:
             agent.archive()
             assert agent.status == "ARCHIVED"
@@ -437,9 +437,9 @@ class TestAgentDelete:
         agent.delete()  # should not raise
 
     @pytest.mark.slow
-    def test_delete_live(self, api_key: str) -> None:
+    def test_delete_live(self, api_key: str, live_model: str) -> None:
         """Live: create an agent and immediately delete it."""
-        agent = Agent.create(api_key=api_key, prompt="echo 'delete-test'")
+        agent = Agent.create(api_key=api_key, prompt="echo 'delete-test'", model=live_model)
         agent.delete()  # should not raise
 
 

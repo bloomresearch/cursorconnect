@@ -113,6 +113,12 @@ class MockResponse:
 
 
 @pytest.fixture(scope="session")
+def live_model() -> str:
+    """Model ID used by live tests to avoid relying on the API's default."""
+    return "gemini-3-flash"
+
+
+@pytest.fixture(scope="session")
 def api_key() -> str:
     """Provide ``CURSOR_API_KEY`` from the environment.
 

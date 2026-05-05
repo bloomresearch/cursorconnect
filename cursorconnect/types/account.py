@@ -7,7 +7,10 @@ run-result API responses.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .conversation import Conversation
 
 
 @dataclass
@@ -78,9 +81,8 @@ class RunResult:
     status : str
         The terminal status.  One of ``"FINISHED"``, ``"ERROR"``,
         ``"CANCELLED"``, or ``"EXPIRED"``.
-    conversation : Optional[List[Any]], optional
-        Ordered list of :data:`~cursorconnect.types.ConversationTurn` dicts
-        for the run, by default ``None``.
+    conversation : Conversation, optional
+        Typed conversation history for the run, by default ``None``.
     error_message : Optional[str], optional
         A human-readable error description populated when *status* is
         ``"ERROR"``, by default ``None``.
@@ -92,7 +94,8 @@ class RunResult:
 
     run_id: str
     status: str
-    conversation: Optional[List[Any]] = None
+    conversation: Optional["Conversation"] = None
     error_message: Optional[str] = None
     agent_id: Optional[str] = None
     artifacts: Optional[List[Any]] = None
+    result_text: Optional[str] = None

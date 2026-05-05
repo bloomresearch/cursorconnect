@@ -9,7 +9,7 @@ import concurrent.futures
 from typing import Callable, Dict, List, Literal, Optional, Union, Any
 
 from .agent import Agent
-from .types import CloudOptions, ModelSelection
+from .types import CloudOptions, LocalOptions, ModelSelection
 from .types.mesh import MeshTask, MeshResult
 
 CleanupStrategy = Literal["archive", "delete"]
@@ -23,14 +23,21 @@ class Mesh:
     broadcasting the results of finished agents to still-running peers
     (cross-checking), and ensuring all created agents are cleaned up.
 
+    Works with both cloud and local execution. Pass ``cloud`` for cloud
+    agents, ``local`` for local agents, or mix both at the task level.
+
     Parameters
     ----------
     api_key : Optional[str], optional
         The Cursor API key to use for all agents, by default None (reads from env).
     cloud : Optional[CloudOptions], optional
         Default cloud options for all tasks, by default None.
+    local : Optional[LocalOptions], optional
+        Default local options for all tasks, by default None. When set (and
+        ``cloud`` is not), tasks run locally unless overridden per-task.
     model : Optional[Union[str, ModelSelection]], optional
-        Default model selection for all tasks, by default None.
+        Default model selection for all tasks, by default None. Supports
+        ``ModelParameters`` and the ``thinking=`` shorthand.
     max_workers : Optional[int], optional
         Maximum number of concurrent agent threads. Defaults to the number of tasks.
     cross_check : Union[bool, Callable[[MeshResult, List[Agent]], str]], optional
@@ -39,7 +46,8 @@ class Mesh:
         objects, and return a string to send to the peers. By default False.
     cleanup : Optional[CleanupStrategy], optional
         How to clean up agents when the context manager exits. One of "archive",
-        "delete", or None. By default "archive".
+        "delete", or None. By default "archive". For local agents or cloud
+        agents using "archive", this calls ``agent.close()``.
     """
 
     def __init__(
@@ -47,6 +55,7 @@ class Mesh:
         *,
         api_key: Optional[str] = None,
         cloud: Optional[CloudOptions] = None,
+        local: Optional[LocalOptions] = None,
         model: Optional[Union[str, ModelSelection]] = None,
         max_workers: Optional[int] = None,
         cross_check: Union[bool, Callable[[MeshResult, List[Agent]], str]] = False,
@@ -54,6 +63,7 @@ class Mesh:
     ) -> None:
         self.api_key = api_key
         self.cloud = cloud
+        self.local = local
         self.model = model
         self.max_workers = max_workers
         self.cross_check = cross_check
@@ -73,6 +83,7 @@ class Mesh:
         prompt: Optional[str] = None,
         *,
         cloud: Optional[CloudOptions] = None,
+        local: Optional[LocalOptions] = None,
         model: Optional[Union[str, ModelSelection]] = None,
     ) -> "Mesh":
         """
@@ -87,6 +98,8 @@ class Mesh:
             The instruction for the agent. Required if ``name_or_task`` is a string.
         cloud : Optional[CloudOptions], optional
             Task-specific cloud options (overrides Mesh defaults), by default None.
+        local : Optional[LocalOptions], optional
+            Task-specific local options (overrides Mesh defaults), by default None.
         model : Optional[Union[str, ModelSelection]], optional
             Task-specific model selection (overrides Mesh defaults), by default None.
 
@@ -96,20 +109,31 @@ class Mesh:
             Returns ``self`` to allow chaining (e.g., ``mesh.add(...).add(...)``).
         """
         if isinstance(name_or_task, MeshTask):
-            # Apply mesh-level defaults if the task doesn't override them
-            if name_or_task.cloud is None and self.cloud is not None:
+            # Only apply mesh-level defaults if the task doesn't specify a runtime
+            if name_or_task.cloud is None and name_or_task.local is None:
                 name_or_task.cloud = self.cloud
+                name_or_task.local = self.local
+            
             if name_or_task.model is None and self.model is not None:
                 name_or_task.model = self.model
             self._tasks.append(name_or_task)
         else:
             if prompt is None:
                 raise ValueError("prompt is required when name_or_task is a string")
+            
+            # Task-level options take precedence over Mesh defaults
+            task_cloud = cloud
+            task_local = local
+            if task_cloud is None and task_local is None:
+                task_cloud = self.cloud
+                task_local = self.local
+
             self._tasks.append(
                 MeshTask(
                     name=name_or_task,
                     prompt=prompt,
-                    cloud=cloud or self.cloud,
+                    cloud=task_cloud,
+                    local=task_local,
                     model=model or self.model,
                 )
             )
@@ -193,73 +217,60 @@ class Mesh:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         if not self.cleanup:
             return
-            
+
         for agent in self._agents:
             try:
-                if self.cleanup == "archive":
-                    agent.archive()
-                elif self.cleanup == "delete":
+                if self.cleanup == "delete":
                     agent.delete()
+                else:
+                    agent.close()
             except Exception:
-                # Swallow cleanup errors on exit so we don't mask original exceptions
                 pass
 
     def _execute_task(self, task: MeshTask, timeout: Optional[float]) -> MeshResult:
         """Internal worker method to execute a single task."""
+        from cursorconnect.exceptions import CursorAgentError
+
         kwargs: Dict[str, Any] = {
             "prompt": task.prompt,
             "name": task.name,
         }
         if self.api_key:
             kwargs["api_key"] = self.api_key
-        # fallback to env var logic handles missing api_key in Agent.create if not explicitly provided
-        elif "api_key" not in kwargs and self.api_key is None:
-            # We don't provide api_key so Agent.create will use the env var
-            kwargs["api_key"] = None # Will be caught by _make_client
 
+        if task.local:
+            kwargs["local"] = task.local
         if task.cloud:
             kwargs["cloud"] = task.cloud
+
+        # Defensive guard: local takes precedence if both somehow ended up here
+        if "local" in kwargs and "cloud" in kwargs:
+            kwargs.pop("cloud")
+
         if task.model:
             kwargs["model"] = task.model
 
-        # 1. Create the agent
-        # If kwargs["api_key"] is None, pop it so we pass either a string or nothing.
-        # Actually, Agent.create takes api_key as a positional argument or kwarg without default.
-        # We need to resolve api_key to pass to create, or pass None if allowed.
-        # Agent.create requires api_key: str. Let's resolve it here if needed, or pass an empty string and let create handle it?
-        # Actually Agent.create signature: create(cls, api_key: str, ...)
-        
-        # Let's resolve api_key properly.
-        from cursorconnect.exceptions import CursorAgentError
-        import os
-        api_key = self.api_key or os.environ.get("CURSOR_API_KEY")
-        if not api_key:
-            raise CursorAgentError("No API key provided.", code="missing_api_key")
-        
-        # Remove api_key from kwargs if it's there so we don't pass it twice
-        if "api_key" in kwargs:
-            del kwargs["api_key"]
+        agent = Agent.create(**kwargs)
 
-        agent = Agent.create(api_key=api_key, **kwargs)
-        
         with self._lock:
             self._agents.append(agent)
             self._live_agents[task.name] = agent
 
-        # 2. Wait for the initial run
         run_obj = agent.initial_run
         if not run_obj:
             raise CursorAgentError(f"Task {task.name} failed to enqueue an initial run.")
-            
+
         run_result = run_obj.wait(timeout=timeout)
-        
-        # Enrich the run result with the agent_id
         run_result.agent_id = agent.agent_id
-        
-        # 3. Fetch artifacts
-        artifacts = agent.list_artifacts()
-        run_result.artifacts = artifacts
-        
+
+        artifacts = []
+        if not getattr(agent, "_is_local", False):
+            try:
+                artifacts = agent.list_artifacts()
+                run_result.artifacts = artifacts
+            except Exception:
+                pass
+
         mesh_result = MeshResult(
             name=task.name,
             agent=agent,
@@ -267,7 +278,6 @@ class Mesh:
             artifacts=artifacts,
         )
 
-        # 4. Remove from live agents and optionally cross-check
         with self._lock:
             if task.name in self._live_agents:
                 del self._live_agents[task.name]

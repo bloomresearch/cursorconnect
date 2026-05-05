@@ -42,23 +42,28 @@ class _AgentManagerShim:
     def __init__(self, api_key: str):
         self._api_key = api_key
 
-    def create(self, prompt_text: str, repo_url: str, starting_ref: str = "main", 
+    def create(self, prompt_text: str, repo_url: Optional[str] = None,
+               starting_ref: str = "main",
                model_id: Optional[str] = None, **kwargs) -> _AgentShimWrapper:
         from .agent import Agent
-        cloud_opts = CloudOptions(repos=[{"url": repo_url, "startingRef": starting_ref}])
-        # Transfer known kwargs to cloud_opts
-        if "autoCreatePR" in kwargs:
-            cloud_opts.autoCreatePR = kwargs["autoCreatePR"]
-        if "workOnCurrentBranch" in kwargs:
-            cloud_opts.workOnCurrentBranch = kwargs["workOnCurrentBranch"]
-            
-        model = ModelSelection(id=model_id) if model_id else None
-        
+
+        create_kwargs = dict(kwargs)
+
+        if "cloud" not in create_kwargs and "local" not in create_kwargs and repo_url:
+            cloud_opts = CloudOptions(repos=[{"url": repo_url, "startingRef": starting_ref}])
+            if "autoCreatePR" in create_kwargs:
+                cloud_opts.autoCreatePR = create_kwargs.pop("autoCreatePR")
+            if "workOnCurrentBranch" in create_kwargs:
+                cloud_opts.workOnCurrentBranch = create_kwargs.pop("workOnCurrentBranch")
+            create_kwargs["cloud"] = cloud_opts
+
+        model = ModelSelection(id=model_id) if model_id else create_kwargs.pop("model", None)
+
         agent = Agent.create(
-            self._api_key,
-            prompt=prompt_text,
-            cloud=cloud_opts,
-            model=model
+            prompt_text,
+            api_key=self._api_key,
+            model=model,
+            **create_kwargs,
         )
         return _AgentShimWrapper(agent)
 

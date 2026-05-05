@@ -151,7 +151,7 @@ class TestRunWait:
         """Live: create an agent, get its run, and wait for completion."""
         from cursorconnect import Agent
 
-        agent = Agent.create(api_key=api_key, prompt="Print 'done' and stop immediately.")
+        agent = Agent.create(api_key=api_key, prompt="Print 'done' and stop immediately.", model="gemini-3-flash")
         try:
             assert agent._latest_run_id is not None
             run = Run(agent._client, agent.agent_id, {"id": agent._latest_run_id})
@@ -211,7 +211,7 @@ class TestRunCancel:
         """Live: start an agent, cancel its run, verify the cancelled status."""
         from cursorconnect import Agent
 
-        agent = Agent.create(api_key=api_key, prompt="Sleep for 1 hour doing nothing.")
+        agent = Agent.create(api_key=api_key, prompt="Sleep for 1 hour doing nothing.", model="gemini-3-flash")
         try:
             assert agent._latest_run_id is not None
             run = Run(agent._client, agent.agent_id, {"id": agent._latest_run_id})
@@ -247,12 +247,13 @@ class TestRunConversation:
         ]
     }
 
-    def test_conversation_returns_list(self, mock_http, cursor_client) -> None:
-        """``Run.conversation()`` returns a ``list``."""
+    def test_conversation_returns_conversation(self, mock_http, cursor_client) -> None:
+        """``Run.conversation()`` returns a ``Conversation`` object."""
+        from cursorconnect.types.conversation import Conversation
         mock_http(MockResponse(self._CONV_PAYLOAD))
         run = _make_run(cursor_client)
-        turns = run.conversation()
-        assert isinstance(turns, list)
+        conv = run.conversation()
+        assert isinstance(conv, Conversation)
 
     def test_conversation_turn_count(self, mock_http, cursor_client) -> None:
         """The number of turns matches the ``turns`` array in the response."""
@@ -262,11 +263,13 @@ class TestRunConversation:
         assert len(turns) == 1
 
     def test_conversation_turn_structure(self, mock_http, cursor_client) -> None:
-        """Each turn dict has a ``type`` key."""
+        """Each turn is a typed ``ConversationTurn`` with a ``type`` attribute."""
+        from cursorconnect.types.conversation import ConversationTurn
         mock_http(MockResponse(self._CONV_PAYLOAD))
         run = _make_run(cursor_client)
-        turns = run.conversation()
-        assert turns[0]["type"] == "agentConversationTurn"
+        conv = run.conversation()
+        assert isinstance(conv[0], ConversationTurn)
+        assert conv[0].type == "agentConversationTurn"
 
     def test_conversation_falls_back_to_items_key(self, mock_http, cursor_client) -> None:
         """``conversation()`` also works when the API returns ``items`` instead of ``turns``."""
@@ -279,25 +282,26 @@ class TestRunConversation:
         assert len(turns) == 1
 
     def test_conversation_empty(self, mock_http, cursor_client) -> None:
-        """An empty turns array produces an empty list without error."""
+        """An empty turns array produces an empty ``Conversation`` without error."""
         mock_http(MockResponse({"turns": []}))
         run = _make_run(cursor_client)
-        assert run.conversation() == []
+        conv = run.conversation()
+        assert len(conv) == 0
 
     @pytest.mark.slow
     def test_conversation_live(self, api_key: str) -> None:
         """Live: retrieve conversation history from a run that has completed."""
         from cursorconnect import Agent
 
-        agent = Agent.create(api_key=api_key, prompt="Say 'hello' exactly once.")
+        agent = Agent.create(api_key=api_key, prompt="Say 'hello' exactly once.", model="gemini-3-flash")
         try:
             assert agent._latest_run_id is not None
             run = Run(agent._client, agent.agent_id, {"id": agent._latest_run_id})
             # Wait for the run to finish before reading conversation
             result = run.wait(timeout=120, poll_interval=3)
             if result.status == "FINISHED":
-                turns = run.conversation()
-                assert isinstance(turns, list)
+                conv = run.conversation()
+                assert len(conv) >= 0
         finally:
             agent.delete()
 

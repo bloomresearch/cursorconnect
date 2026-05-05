@@ -5,9 +5,11 @@ import subprocess
 import threading
 import uuid
 import logging
-from typing import Dict, Any, AsyncGenerator, Optional, Tuple
+from typing import Callable, Dict, Any, AsyncGenerator, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+EventHandler = Callable[[Any], None]
 
 class BridgeManager:
     """
@@ -24,13 +26,20 @@ class BridgeManager:
     node_bin : str, optional
         The path to the Node.js executable. Defaults to 'node'.
     """
-    def __init__(self, bridge_path: str, node_bin: str = 'node'):
+    def __init__(self, bridge_path: str, node_bin: str = 'node', api_key: Optional[str] = None):
         self.bridge_path = bridge_path
         self.node_bin = node_bin
+        self._api_key = api_key
         self._process: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
         self._pending_requests: Dict[str, asyncio.Future] = {}
         self._streaming_queues: Dict[str, Tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = {}
+        # Per-request side-channel handlers. Used to capture `type: "event"`
+        # messages that arrive while a `send_request` future is in flight (e.g.
+        # `agent.send` with `streamEvents: true` emits onDelta/onStep events
+        # before resolving with `type: "success"`). Without this side-channel
+        # those events would be silently dropped by `_dispatch_message`.
+        self._request_event_handlers: Dict[str, EventHandler] = {}
         self._reader_thread: Optional[threading.Thread] = None
 
     def start(self):
@@ -42,14 +51,20 @@ class BridgeManager:
         RuntimeError
             If Node.js is not found or fails to start.
         """
+        import os
         self._check_health()
+        env = os.environ.copy()
+        api_key = self._api_key or os.environ.get("CURSOR_API_KEY", "")
+        if api_key:
+            env["CURSOR_API_KEY"] = api_key
         self._process = subprocess.Popen(
             [self.node_bin, self.bridge_path],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=sys.stderr,
             text=True,
-            bufsize=1
+            bufsize=1,
+            env=env,
         )
         self._reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
         self._reader_thread.start()
@@ -80,35 +95,61 @@ class BridgeManager:
         self._handle_crash()
 
     def _dispatch_message(self, msg: dict):
-        """Dispatches an incoming message from Node.js to the appropriate future or queue."""
+        """Dispatches an incoming message from Node.js to the appropriate future, queue, or event handler."""
         msg_id = msg.get("id")
         if not msg_id:
             logger.error(f"Received message without id: {msg}")
             return
-            
+
+        msg_type = msg.get("type")
+
         with self._lock:
             future = self._pending_requests.get(msg_id)
             queue_info = self._streaming_queues.get(msg_id)
+            event_handler = self._request_event_handlers.get(msg_id)
 
-        # Handle standard request/response
-        if future and not future.done() and msg.get("type") in ("success", "error"):
+        # Standard request/response future resolution.
+        if future and not future.done() and msg_type in ("success", "error"):
             loop = future.get_loop()
-            if msg.get("type") == "success":
+            if msg_type == "success":
                 loop.call_soon_threadsafe(future.set_result, msg.get("data"))
             else:
-                loop.call_soon_threadsafe(future.set_exception, RuntimeError(msg.get("error", "Unknown error")))
-            
+                loop.call_soon_threadsafe(
+                    future.set_exception,
+                    RuntimeError(msg.get("error", "Unknown error")),
+                )
+
             with self._lock:
                 self._pending_requests.pop(msg_id, None)
 
-        # Handle streaming updates
+        # Side-channel: route `type: "event"` messages to a per-request handler
+        # when registered. This rescues mid-flight events (e.g. agent.send
+        # streamEvents) that previously fell through to the silent-drop path
+        # because `send_request` only owns a future, not a streaming queue.
+        if msg_type == "event" and event_handler is not None:
+            try:
+                event_handler(msg.get("data"))
+            except Exception:
+                logger.exception("Per-request event handler raised; ignoring.")
+
+        # Streaming updates (run.stream registers a queue).
         if queue_info:
             loop, queue = queue_info
             loop.call_soon_threadsafe(queue.put_nowait, msg)
-            # Cleanup queue on stream completion or error
-            if msg.get("type") in ("success", "error"):
+            if msg_type in ("success", "error"):
                 with self._lock:
                     self._streaming_queues.pop(msg_id, None)
+            return
+
+        # If we got here with an "event" message that has no destination at all
+        # (no streaming queue and no event handler), surface it via debug log
+        # rather than silently discarding it.
+        if msg_type == "event" and event_handler is None:
+            logger.debug(
+                "Bridge emitted an event with no registered handler "
+                "(req_id=%s); event will be dropped.",
+                msg_id,
+            )
 
     def _handle_crash(self):
         """Handles a crash by failing pending requests safely from another thread."""
@@ -123,9 +164,16 @@ class BridgeManager:
             
             self._pending_requests.clear()
             self._streaming_queues.clear()
+            self._request_event_handlers.clear()
             self._process = None
 
-    async def send_request(self, action: str, target: str = None, args: list = None) -> Any:
+    async def send_request(
+        self,
+        action: str,
+        target: str = None,
+        args: list = None,
+        on_event: Optional[EventHandler] = None,
+    ) -> Any:
         """
         Sends a single request to the Node.js bridge and waits for the response.
 
@@ -137,6 +185,13 @@ class BridgeManager:
             The target object ID (e.g., an agent ID or run ID).
         args : list, optional
             A list of arguments to pass to the action.
+        on_event : callable, optional
+            A callback invoked for any ``type: "event"`` messages that arrive
+            while the request is in flight. This is how callers can capture the
+            mid-flight events emitted by actions like ``agent.send`` with
+            ``streamEvents: true``. Without this callback those events are
+            still surfaced via debug logging rather than silently dropped, but
+            registering a handler is the canonical way to consume them.
 
         Returns
         -------
@@ -155,15 +210,17 @@ class BridgeManager:
         req_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        
+
         with self._lock:
             self._pending_requests[req_id] = future
+            if on_event is not None:
+                self._request_event_handlers[req_id] = on_event
 
         req = {
             "id": req_id,
             "action": action,
             "target": target,
-            "args": args or []
+            "args": args or [],
         }
 
         try:
@@ -173,7 +230,11 @@ class BridgeManager:
             self._handle_crash()
             raise RuntimeError("Node.js bridge crashed while writing request.")
 
-        return await future
+        try:
+            return await future
+        finally:
+            with self._lock:
+                self._request_event_handlers.pop(req_id, None)
 
     async def stream_request(self, action: str, target: str = None, args: list = None) -> AsyncGenerator[Dict[str, Any], None]:
         """

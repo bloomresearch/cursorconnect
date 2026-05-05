@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
+
 
 class CommonModels:
     """A registry of common model IDs for convenient autocomplete."""
@@ -50,20 +53,92 @@ class ModelParameterValue:
     id: str
     value: str
 
+
+@dataclass
+class ModelParameters:
+    """
+    Ergonomic builder for model parameters.
+
+    Provides named fields for well-known parameters so you don't need
+    to construct ``ModelParameterValue`` lists by hand.  Any parameter
+    set to a non-None value is included in the serialized list.
+
+    Parameters
+    ----------
+    thinking : str, optional
+        Thinking budget level (``"high"``, ``"medium"``, ``"low"``).
+
+    Examples
+    --------
+    >>> params = ModelParameters(thinking="high")
+    >>> model = ModelSelection(CommonModels.CLAUDE_4_6_SONNET, params=params)
+
+    >>> # Or build incrementally:
+    >>> params = ModelParameters()
+    >>> params.thinking = "high"
+    >>> model = ModelSelection("claude-sonnet-4-6", params=params)
+    """
+    thinking: Optional[str] = None
+
+    def to_list(self) -> List[ModelParameterValue]:
+        """Convert set fields into a ``List[ModelParameterValue]``."""
+        out: List[ModelParameterValue] = []
+        if self.thinking is not None:
+            out.append(ModelParameterValue(id="thinking", value=self.thinking))
+        return out
+
+    def __bool__(self) -> bool:
+        return any(v is not None for v in (self.thinking,))
+
+
 @dataclass
 class ModelSelection:
     """
     Specifies a model and its optional parameters for a run.
 
+    Accepts parameters as a raw list, a :class:`ModelParameters` helper,
+    or inline via the ``thinking`` shorthand.
+
     Parameters
     ----------
     id : str
         The unique identifier of the model.
-    params : Optional[List[ModelParameterValue]], optional
-        A list of parameter values for the model, by default None.
+    params : ModelParameters, List[ModelParameterValue], or None
+        Model parameters.  A :class:`ModelParameters` instance is
+        automatically converted to the wire format.
+    thinking : str, optional
+        Shorthand — equivalent to
+        ``params=ModelParameters(thinking=thinking)``.  Ignored if
+        *params* is already provided.
+
+    Examples
+    --------
+    >>> # Shorthand (cleanest for single params):
+    >>> ModelSelection("claude-sonnet-4-6", thinking="high")
+
+    >>> # Via ModelParameters:
+    >>> ModelSelection("claude-sonnet-4-6", params=ModelParameters(thinking="high"))
+
+    >>> # Raw (full control):
+    >>> ModelSelection("claude-sonnet-4-6", params=[ModelParameterValue("thinking", "high")])
     """
     id: str
-    params: Optional[List[ModelParameterValue]] = None
+    params: Optional[Union[List[ModelParameterValue], "ModelParameters"]] = None
+    thinking: Optional[str] = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.params is None and self.thinking is not None:
+            self.params = ModelParameters(thinking=self.thinking)
+
+    @property
+    def resolved_params(self) -> Optional[List[ModelParameterValue]]:
+        """Return params as a flat list, converting ModelParameters if needed."""
+        if self.params is None:
+            return None
+        if isinstance(self.params, ModelParameters):
+            result = self.params.to_list()
+            return result if result else None
+        return self.params
 
 @dataclass
 class ModelParameterDefinition:

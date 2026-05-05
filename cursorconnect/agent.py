@@ -1,16 +1,16 @@
 """Unified Agent facade for the CursorConnect SDK.
 
 This module exposes a single :class:`Agent` class that covers the complete
-lifecycle of a Cursor Cloud agent: creation, resumption, messaging, artifact
-retrieval, and termination.  Each class-method factory builds an internal
-:class:`~cursorconnect.client.CursorClient` from the provided *api_key*, so
-callers never need to instantiate a client directly.
+lifecycle of both cloud and local Cursor agents: creation, resumption,
+messaging, artifact retrieval, and termination.  Pass ``cloud=CloudOptions``
+for cloud execution or ``local=LocalOptions`` for local execution via the
+Node.js bridge—the same ``Agent`` / ``Run`` interface applies to both.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 from .client import CursorClient
 from .artifact import Artifact
@@ -26,6 +26,9 @@ from .exceptions import CursorAgentError
 
 if TYPE_CHECKING:
     from .run import Run
+    from ._bridge.manager import BridgeManager
+    from ._bridge.local_run import LocalRun
+    from .types.run_protocol import RunProtocol
 
 
 def _parse_model(raw: Any) -> Optional[ModelSelection]:
@@ -37,9 +40,51 @@ def _parse_model(raw: Any) -> Optional[ModelSelection]:
     return None
 
 
+def _resolve_model_payload(model: Optional[Union[str, ModelSelection]]) -> Optional[Dict[str, Any]]:
+    """
+    Convert a model selection into the dictionary payload expected by the API.
+
+    Handles resolving shorthand IDs, ``ModelParameters``, and the ``thinking=``
+    parameter into the canonical JSON structure.
+    """
+    if model is None:
+        return None
+    if isinstance(model, str):
+        return {"id": model}
+    payload: Dict[str, Any] = {"id": model.id}
+    resolved = model.resolved_params
+    if resolved:
+        payload["params"] = [{"id": p.id, "value": p.value} for p in resolved]
+    return payload
+
+
+import threading as _threading
+
+_bridge_lock = _threading.Lock()
+
+
+def _get_bridge(api_key: Optional[str] = None) -> "BridgeManager":
+    """Lazily import and return a shared BridgeManager singleton.
+
+    Thread-safe: the bridge is started exactly once even when multiple
+    threads request it concurrently (e.g. from a Mesh).
+    """
+    from ._bridge.manager import BridgeManager
+
+    with _bridge_lock:
+        if not hasattr(_get_bridge, "_instance"):
+            bridge_js = os.path.join(
+                os.path.dirname(__file__), "_bridge", "bridge.js"
+            )
+            bridge = BridgeManager(bridge_js, api_key=api_key)
+            bridge.start()
+            _get_bridge._instance = bridge
+    return _get_bridge._instance
+
+
 class Agent:
     """
-    Unified facade for a Cursor Cloud Agent.
+    Unified facade for Cursor Agents (cloud and local).
 
     This class provides both class-level factory operations (:meth:`create`,
     :meth:`resume`, :meth:`get`, :meth:`list`, :meth:`prompt`) and
@@ -73,21 +118,29 @@ class Agent:
 
     def __init__(
         self,
-        _client: CursorClient,
+        _client: Optional[CursorClient],
         _data: Dict[str, Any],
         _api_key: str,
+        *,
+        _bridge: Optional["BridgeManager"] = None,
+        _bridge_agent_id: Optional[str] = None,
+        _local: Optional[LocalOptions] = None,
     ) -> None:
         self._client = _client
         self._api_key = _api_key
+        self._bridge = _bridge
+        self._bridge_agent_id = _bridge_agent_id
+        self._local = _local
+        self._is_local = _bridge is not None
 
         # Normalise: creation wraps data in {"agent": {...}, "latestRunId": "..."}
         agent_data = _data.get("agent", _data)
 
-        self.agent_id: Optional[str] = agent_data.get("id")
+        self.agent_id: Optional[str] = agent_data.get("id") or _bridge_agent_id
         self.name: Optional[str] = agent_data.get("name")
-        self.status: Optional[str] = agent_data.get("status")
+        self.status: Optional[str] = agent_data.get("status", "ACTIVE" if self._is_local else None)
         self.model: Optional[ModelSelection] = _parse_model(agent_data.get("model"))
-        self._latest_run_id: Optional[str] = _data.get("latestRunId")
+        self._latest_run_id: Optional[str] = _data.get("latestRunId") or _data.get("runId")
         self._raw: Dict[str, Any] = agent_data
 
     # ------------------------------------------------------------------
@@ -122,75 +175,76 @@ class Agent:
     @classmethod
     def create(
         cls,
-        api_key: str,
         prompt: str,
         *,
+        api_key: Optional[str] = None,
         cloud: Optional[CloudOptions] = None,
         local: Optional[LocalOptions] = None,
         model: Optional[Union[str, ModelSelection]] = None,
         name: Optional[str] = None,
     ) -> "Agent":
         """
-        Create a new Cursor Cloud Agent and enqueue its first run.
+        Create a new Cursor Agent and enqueue its first run.
+
+        Automatically selects the runtime based on which options are provided:
+        pass ``cloud`` for cloud execution, or ``local`` for local execution
+        via the Node.js bridge to the TypeScript SDK.
 
         Parameters
         ----------
-        api_key : str
-            Cursor API key used for authentication.
         prompt : str
             The initial user message / task description for the agent.
+        api_key : str, optional
+            Cursor API key. Required for cloud agents. Falls back to the
+            ``CURSOR_API_KEY`` environment variable when omitted.
         cloud : CloudOptions, optional
             Cloud-execution options (repos, environment, PR settings).
         local : LocalOptions, optional
-            Local-execution options (cwd, setting sources).  Accepted for
-            forward compatibility; currently unused by the Cloud backend.
+            Local-execution options (cwd, setting sources). When provided
+            (and ``cloud`` is not), the agent runs locally via the Node.js
+            bridge.
         model : Union[str, ModelSelection], optional
-            Model to use for this agent. Can be a raw string ID or a 
-            ``ModelSelection`` object. Defaults to the account's configured 
-            default model when omitted.
+            Model to use. Supports ``ModelParameters`` and the ``thinking=`` shorthand. Can be a raw string ID or a ``ModelSelection``
+            object. Supports ``ModelParameters`` and the ``thinking=`` shorthand.
+            Defaults to the account's configured default when omitted.
         name : str, optional
             A human-readable name for the agent.
 
         Returns
         -------
         Agent
-            A fully initialised ``Agent`` instance with ``agent_id`` and
-            ``_latest_run_id`` populated.
+            A fully initialised ``Agent`` instance.
 
         Raises
         ------
         CursorAgentError
-            If *api_key* is missing or the API request fails.
-
-        Examples
-        --------
-        >>> from cursorconnect import Agent
-        >>> from cursorconnect.types import CloudOptions, ModelSelection
-        >>> agent = Agent.create(
-        ...     api_key="sk-...",
-        ...     prompt="Refactor src/utils.py to use pathlib",
-        ...     cloud=CloudOptions(
-        ...         repos=[{"url": "https://github.com/org/repo"}],
-        ...         autoCreatePR=True,
-        ...     ),
-        ...     model=ModelSelection(id="claude-sonnet-4-5"),
-        ... )
-        >>> print(agent.agent_id)
-        bc-xxxxxxxx
+            If required arguments are missing or the request fails.
         """
+        if local is not None and cloud is not None:
+            raise ValueError("Cannot specify both 'local' and 'cloud' options. Choose one runtime.")
+
+        if local is not None and cloud is None:
+            return cls._create_local(prompt, local=local, api_key=api_key, model=model, name=name)
+
+        return cls._create_cloud(prompt, api_key=api_key, cloud=cloud, model=model, name=name)
+
+    @classmethod
+    def _create_cloud(
+        cls,
+        prompt: str,
+        *,
+        api_key: Optional[str] = None,
+        cloud: Optional[CloudOptions] = None,
+        model: Optional[Union[str, ModelSelection]] = None,
+        name: Optional[str] = None,
+    ) -> "Agent":
         client = cls._make_client(api_key)
+        key = api_key or os.environ.get("CURSOR_API_KEY", "")
         payload: Dict[str, Any] = {"prompt": {"text": prompt}}
 
-        if model is not None:
-            if isinstance(model, str):
-                payload["model"] = {"id": model}
-            else:
-                model_payload: Dict[str, Any] = {"id": model.id}
-                if model.params:
-                    model_payload["params"] = [
-                        {"id": p.id, "value": p.value} for p in model.params
-                    ]
-                payload["model"] = model_payload
+        model_payload = _resolve_model_payload(model)
+        if model_payload is not None:
+            payload["model"] = model_payload
 
         if name is not None:
             payload["name"] = name
@@ -208,75 +262,122 @@ class Agent:
                 payload["skipReviewerRequest"] = cloud.skipReviewerRequest
 
         resp = client._post("/agents", json=payload)
-        return cls._from_response(client, resp, api_key)
+        return cls._from_response(client, resp, key)
+
+    @classmethod
+    def _create_local(
+        cls,
+        prompt: str,
+        *,
+        local: LocalOptions,
+        api_key: Optional[str] = None,
+        model: Optional[Union[str, ModelSelection]] = None,
+        name: Optional[str] = None,
+    ) -> "Agent":
+        from ._bridge.local_run import _run_async
+
+        key = api_key or os.environ.get("CURSOR_API_KEY", "")
+        bridge = _get_bridge(api_key=key)
+
+        options: Dict[str, Any] = {}
+        if key:
+            options["apiKey"] = key
+
+        local_opts: Dict[str, Any] = {}
+        if local.cwd is not None:
+            local_opts["cwd"] = local.cwd
+        if local.settingSources is not None:
+            local_opts["settingSources"] = local.settingSources
+        if local.sandboxOptions is not None:
+            local_opts["sandboxOptions"] = local.sandboxOptions
+        if local_opts:
+            options["local"] = local_opts
+
+        model_payload = _resolve_model_payload(model)
+        if model_payload is not None:
+            options["model"] = model_payload
+
+        if name is not None:
+            options["name"] = name
+
+        resp = _run_async(bridge.send_request("Agent.create", args=[options]))
+        if not isinstance(resp, dict):
+            raise CursorAgentError(f"Bridge returned unexpected response type: {type(resp).__name__}")
+        if "agentId" not in resp:
+            raise CursorAgentError("Bridge response missing required key 'agentId'")
+        bridge_agent_id = resp["agentId"]
+
+        send_resp = _run_async(bridge.send_request(
+            "agent.send",
+            target=bridge_agent_id,
+            args=[prompt, {"streamEvents": True}],
+        ))
+        if not isinstance(send_resp, dict):
+            raise CursorAgentError(f"Bridge returned unexpected response type: {type(send_resp).__name__}")
+        if "runId" not in send_resp:
+            raise CursorAgentError("Bridge response missing required key 'runId'")
+        bridge_run_id = send_resp["runId"]
+
+        data: Dict[str, Any] = {
+            "id": bridge_agent_id,
+            "name": name,
+            "status": "ACTIVE",
+            "runId": bridge_run_id,
+        }
+
+        return cls(
+            None, data, key,
+            _bridge=bridge,
+            _bridge_agent_id=bridge_agent_id,
+            _local=local,
+        )
 
     @classmethod
     def prompt(
         cls,
-        api_key: str,
         message: str,
         *,
+        api_key: Optional[str] = None,
         cloud: Optional[CloudOptions] = None,
         local: Optional[LocalOptions] = None,
         model: Optional[Union[str, ModelSelection]] = None,
         name: Optional[str] = None,
-    ) -> "Run":
+    ) -> "RunProtocol":
         """
         One-shot helper: create an agent, send *message*, and return the
-        initial :class:`~cursorconnect.run.Run` immediately.
+        initial run immediately.
 
         This is the ergonomic entry point for fire-and-forget workloads where
-        you only need the run handle—not a persistent ``Agent`` reference.
-        Pair with :meth:`~cursorconnect.run.Run.stream` or
-        :meth:`~cursorconnect.run.Run.wait` to consume the output.
+        you only need the run handle. Works with both cloud and local execution.
 
         Parameters
         ----------
-        api_key : str
-            Cursor API key used for authentication.
         message : str
             The user prompt to submit.
+        api_key : str, optional
+            Cursor API key. Falls back to ``CURSOR_API_KEY`` env var.
         cloud : CloudOptions, optional
             Cloud-execution options.
         local : LocalOptions, optional
-            Local-execution options (forward-compatible, currently unused).
-        model : ModelSelection, optional
+            Local-execution options.
+        model : Union[str, ModelSelection], optional
             Model to use.
         name : str, optional
             Human-readable name for the agent.
 
         Returns
         -------
-        Run
-            The :class:`~cursorconnect.run.Run` created by the initial message.
-
-        Raises
-        ------
-        CursorAgentError
-            If the agent was created but no initial run ID was returned by
-            the API.
-
-        Examples
-        --------
-        >>> from cursorconnect import Agent
-        >>> from cursorconnect.types import CloudOptions, SDKAssistantMessage
-        >>> run = Agent.prompt(
-        ...     api_key="sk-...",
-        ...     message="Write unit tests for src/parser.py",
-        ...     cloud=CloudOptions(repos=[{"url": "https://github.com/org/repo"}]),
-        ... )
-        >>> for event in run.stream():
-        ...     if isinstance(event, SDKAssistantMessage):
-        ...         content = event.message.get("content", [])
-        ...         for block in content:
-        ...             if isinstance(block, dict) and block.get("type") == "text":
-        ...                 print(block["text"], end="")
+        RunProtocol
+            The run created by the initial message. This object implements
+            the ``RunProtocol`` interface (``stream()``, ``wait()``, ``cancel()``).
         """
-        from .run import Run
-
         agent = cls.create(
-            api_key, message, cloud=cloud, local=local, model=model, name=name
+            message, api_key=api_key, cloud=cloud, local=local, model=model, name=name
         )
+        if agent._is_local:
+            return agent._make_local_run()
+
+        from .run import Run
         if not agent._latest_run_id:
             raise CursorAgentError(
                 "Agent.create did not return a latestRunId; cannot return a Run.",
@@ -389,10 +490,9 @@ class Agent:
         self,
         message: str,
         options: Optional[SendOptions] = None,
-    ) -> "Run":
+    ) -> "RunProtocol":
         """
-        Send a follow-up prompt to this agent and return the resulting
-        :class:`~cursorconnect.run.Run`.
+        Send a follow-up prompt to this agent and return the resulting run.
 
         Parameters
         ----------
@@ -403,21 +503,58 @@ class Agent:
 
         Returns
         -------
-        Run
+        RunProtocol
             The newly created run, ready for streaming or blocking.
         """
+        if self._is_local:
+            return self._send_local(message, options)
+
         from .run import Run
 
         payload: Dict[str, Any] = {"prompt": {"text": message}}
         if options is not None and options.model is not None:
-            if isinstance(options.model, str):
-                payload["model"] = {"id": options.model}
-            else:
-                payload["model"] = {"id": options.model.id}
+            model_payload = _resolve_model_payload(options.model)
+            if model_payload is not None:
+                payload["model"] = model_payload
 
         resp = self._client._post(f"/agents/{self.agent_id}/runs", json=payload)
         run_data = resp.get("run", resp)
         return Run(self._client, self.agent_id, run_data)  # type: ignore[arg-type]
+
+    def _send_local(self, message: str, options: Optional[SendOptions] = None) -> "LocalRun":
+        from ._bridge.local_run import LocalRun, _run_async
+
+        send_opts: Dict[str, Any] = {"streamEvents": True}
+        if options is not None and options.model is not None:
+            model_payload = _resolve_model_payload(options.model)
+            if model_payload is not None:
+                send_opts["model"] = model_payload
+
+        resp = _run_async(self._bridge.send_request(
+            "agent.send",
+            target=self._bridge_agent_id,
+            args=[message, send_opts],
+        ))
+
+        bridge_run_id = ""
+        if isinstance(resp, dict):
+            bridge_run_id = resp.get("runId", "")
+
+        return LocalRun(
+            self._bridge,
+            self._bridge_agent_id or "",
+            bridge_run_id,
+            self.agent_id or "",
+        )
+
+    def _make_local_run(self) -> "LocalRun":
+        from ._bridge.local_run import LocalRun
+        return LocalRun(
+            self._bridge,
+            self._bridge_agent_id or "",
+            self._latest_run_id or "",
+            self.agent_id or "",
+        )
 
     def run(
         self,
@@ -448,7 +585,7 @@ class Agent:
         return self.send(message).wait(timeout=timeout, poll_interval=poll_interval)
 
     @property
-    def initial_run(self) -> Optional["Run"]:
+    def initial_run(self) -> Optional["RunProtocol"]:
         """
         The initial run created alongside this agent.
 
@@ -458,13 +595,16 @@ class Agent:
 
         Returns
         -------
-        Optional[Run]
-            The initial :class:`~cursorconnect.run.Run` object, or ``None``
-            if no initial run ID was returned by the API.
+        Optional[RunProtocol]
+            The initial run object, or ``None`` if no initial run ID was
+            returned.
         """
         if not self._latest_run_id:
             return None
-        
+
+        if self._is_local:
+            return self._make_local_run()
+
         from .run import Run
         return Run(
             self._client,
@@ -478,14 +618,28 @@ class Agent:
 
         An archived agent remains readable but cannot accept new runs.
         Use :meth:`unarchive` to restore it.
+
+        Raises
+        ------
+        UnsupportedRunOperationError
+            If the agent is a local agent.
         """
+        if self._is_local:
+            raise UnsupportedRunOperationError("archive() is not supported for local agents.", operation="archive")
         self._client._post(f"/agents/{self.agent_id}/archive")
         self.status = "ARCHIVED"
 
     def unarchive(self) -> None:
         """
         Unarchive the agent so it can accept new runs again.
+
+        Raises
+        ------
+        UnsupportedRunOperationError
+            If the agent is a local agent.
         """
+        if self._is_local:
+            raise UnsupportedRunOperationError("unarchive() is not supported for local agents.", operation="unarchive")
         self._client._post(f"/agents/{self.agent_id}/unarchive")
         self.status = "ACTIVE"
 
@@ -496,17 +650,33 @@ class Agent:
         .. warning::
             This action is irreversible.  All associated runs and artifacts
             are permanently removed.
+
+        Raises
+        ------
+        UnsupportedRunOperationError
+            If the agent is a local agent.
         """
+        if self._is_local:
+            raise UnsupportedRunOperationError("delete() is not supported for local agents.", operation="delete")
         self._client._delete(f"/agents/{self.agent_id}")
 
     def close(self) -> None:
         """
-        Close this agent session by archiving it.
+        Close this agent session.
 
-        Equivalent to calling :meth:`archive`.  Use this when you are done
-        with an agent and want to prevent further runs without permanently
-        deleting it.
+        For cloud agents, this archives the agent. For local agents, this
+        sends a close command through the bridge.
         """
+        if self._is_local:
+            from ._bridge.local_run import _run_async
+            try:
+                _run_async(self._bridge.send_request(
+                    "agent.close", target=self._bridge_agent_id
+                ))
+            except Exception:
+                pass
+            self.status = "CLOSED"
+            return
         self.archive()
 
     def reload(self) -> "Agent":
@@ -518,7 +688,14 @@ class Agent:
         Agent
             *self*, with ``name``, ``status``, and ``model`` updated to
             reflect the current server-side state.
+
+        Raises
+        ------
+        UnsupportedRunOperationError
+            If the agent is a local agent.
         """
+        if self._is_local:
+            raise UnsupportedRunOperationError("reload() is not supported for local agents.", operation="reload")
         resp = self._client._get(f"/agents/{self.agent_id}")
         agent_data = resp.get("agent", resp)
         self.name = agent_data.get("name", self.name)
@@ -535,7 +712,14 @@ class Agent:
         -------
         list of Artifact
             All artifacts available for download, in server-returned order.
+
+        Raises
+        ------
+        UnsupportedRunOperationError
+            If the agent is a local agent.
         """
+        if self._is_local:
+            raise UnsupportedRunOperationError("list_artifacts() is not supported for local agents.", operation="list_artifacts")
         resp = self._client._get(f"/agents/{self.agent_id}/artifacts")
         return [
             Artifact(self._client, self.agent_id, item)
@@ -558,7 +742,14 @@ class Agent:
         -------
         str
             A temporary presigned S3 URL for direct download.
+
+        Raises
+        ------
+        UnsupportedRunOperationError
+            If the agent is a local agent.
         """
+        if self._is_local:
+            raise UnsupportedRunOperationError("download_artifact() is not supported for local agents.", operation="download_artifact")
         resp = self._client._get(
             f"/agents/{self.agent_id}/artifacts/download",
             params={"path": path},

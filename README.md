@@ -1,39 +1,39 @@
 <p align="center">
   <h1 align="center">CursorConnect</h1>
   <p align="center">
-    <strong>The Python SDK for Cursor Cloud Agents</strong>
+    <strong>The Unofficial Python SDK for Cursor Agents</strong>
   </p>
   <p align="center">
-    Create, orchestrate, and stream AI coding agents from Python.
-    <br />
-    One import. One API key. Full control.
+    Orchestrate cloud and local AI coding agents from Python.<br />
+    One import. Full control. Both runtimes.
   </p>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#two-runtimes-one-interface">Runtimes</a> &middot;
   <a href="#design-philosophy">Design Philosophy</a> &middot;
   <a href="#examples">Examples</a> &middot;
-  <a href="#api-reference">API Reference</a> &middot;
-  <a href="#error-handling">Error Handling</a>
+  <a href="#api-reference">API Reference</a>
 </p>
 
 ---
 
 ## What is CursorConnect?
 
-CursorConnect lets you **programmatically control Cursor's Cloud Agents** from any Python script, notebook, or backend service. Think of it as your remote control for an AI developer that can read your repos, write code, create PRs, and stream its thought process back to you in real time.
+CursorConnect is the Python interface to Cursor's agent infrastructure. It lets you **programmatically create, control, and orchestrate AI coding agents** from any Python script, notebook, or backend service, whether those agents run in Cursor's cloud or locally on your own machine.
 
 With CursorConnect you can:
 
-- **Spin up an agent** with a single function call and point it at any GitHub repo
-- **Stream its output** token-by-token as typed Python objects
-- **Send follow-up instructions** to refine its work across multiple turns
-- **Wait for completion**, then inspect the conversation history and download artifacts
-- **Manage your fleet** of agents: list, archive, resume, or delete them
+- **Spin up agents** that read your repos, write code, create PRs, and run commands
+- **Choose your runtime**: cloud agents execute on Cursor's infrastructure; local agents run as a subprocess on your machine with direct filesystem access
+- **Stream output** token-by-token as typed Python objects, including the agent's internal reasoning
+- **Orchestrate in parallel** with the Mesh layer: dispatch multiple specialist agents, let them cross-check each other's work in real time, and collect structured results - **New! CursorConnect Only**
+- **Send follow-up instructions** to refine work across multiple conversational turns
+- **Manage your fleet**: list, archive, resume, or delete agents programmatically
 - **Query your account**: see available models, connected repositories, and API key metadata
 
-All of this through a clean, Pythonic interface that requires zero knowledge of REST endpoints, SSE framing, or HTTP authentication.
+All of this through a clean, Pythonic interface that hides the underlying REST endpoints, SSE framing, Node.js bridge, and HTTP authentication behind three core concepts: `Agent`, `Run`, and `Mesh`.
 
 ---
 
@@ -52,6 +52,65 @@ pip install -e .
 ```
 
 **Requirements:** Python 3.8+ and `requests>=2.28` (installed automatically).
+
+**For local agents only:** Node.js 18+ and the `@cursor/sdk` npm package must be available on your system. Cloud agents have no additional requirements.
+
+---
+
+## Two Runtimes, One Interface
+
+CursorConnect supports two execution modes. The `Agent` API is the same regardless of which you choose, so you can develop locally and deploy to the cloud (or vice versa) without changing your orchestration code.
+
+### Cloud Runtime
+
+Cloud agents run on Cursor's managed infrastructure. You provide a GitHub repo URL, the agent clones it in a sandboxed environment, does its work, and can open a PR when it finishes. This is the zero-setup path: no local dependencies beyond Python and an API key.
+
+```python
+from cursorconnect import Agent
+from cursorconnect.types import CloudOptions
+
+agent = Agent.create(
+    api_key="crsr_...",
+    prompt="Add comprehensive type hints to all public functions in src/utils.py",
+    cloud=CloudOptions(
+        repos=[{"url": "https://github.com/your-org/your-repo"}],
+        autoCreatePR=True,
+    ),
+)
+```
+
+### Local Runtime
+
+Local agents run as a subprocess on your machine via a Node.js bridge to the TypeScript `@cursor/sdk`. The agent operates directly on your local filesystem, which means it can access private files, work offline, and integrate with local tooling, dev servers, and databases that aren't reachable from the cloud.
+
+```python
+from cursorconnect import Agent
+from cursorconnect.types import LocalOptions
+
+agent = Agent.create(
+    prompt="Refactor the utils module to use pathlib instead of os.path",
+    local=LocalOptions(cwd="/path/to/your/project"),
+    model="claude-sonnet-4-6",
+)
+
+# agent.initial_run returns a RunProtocol (Run or LocalRun)
+run = agent.initial_run
+if run:
+    result = run.wait()
+    print(f"Done: {result.status}")
+```
+
+Same `Agent` class, same `Run` interface, same `stream()` and `wait()` methods. The SDK detects that you passed `local` instead of `cloud` and routes through the Node.js bridge automatically. Under the hood, the bridge communicates with the TypeScript SDK over JSON-RPC via stdin/stdout, handles streaming, and automatically restarts if the subprocess crashes.
+
+### When to Use Which
+
+| | Cloud | Local |
+|---|---|---|
+| **Setup** | API key only | Node.js + `@cursor/sdk` |
+| **Filesystem** | Clones from GitHub | Direct access to local files |
+| **Network** | Runs on Cursor's infra | Runs on your machine |
+| **Best for** | CI/CD pipelines, batch operations across repos, PR automation | Interactive development, private codebases, local tool integration |
+| **Offline** | No | Yes |
 
 ---
 
@@ -86,9 +145,14 @@ run = Agent.prompt(
 
 result = run.wait()
 print(f"Done: {result.status}")  # "FINISHED"
+
+# See what the agent actually did
+conv = result.conversation
+print(conv.text)  # all assistant output as a single string
+print(conv)       # full formatted conversation with turns and roles
 ```
 
-That's it. The agent clones your repo, makes the changes, opens a PR, and you get a structured result object back.
+That's it. The agent clones your repo, makes the changes, opens a PR, and you get a structured result object back. Every `RunResult` carries a `.conversation` property that gives you the complete, typed history of the run so you can inspect, log, or post-process what happened.
 
 ### 3. Multi-turn conversation
 
@@ -107,20 +171,25 @@ agent = Agent.create(
 )
 
 run1 = agent.send("Add JWT-based authentication with refresh tokens")
-run1.wait()
+result1 = run1.wait()
 
 run2 = agent.send("Now add role-based access control with admin and user roles")
-run2.wait()
+result2 = run2.wait()
+
+# Each result carries the conversation from that run
+print(f"Round 1: {len(result1.conversation)} turns")
+print(f"Round 2: {len(result2.conversation)} turns")
+print(result2.conversation.text)
 
 for artifact in agent.list_artifacts():
     print(f"  {artifact.path}  ({artifact.size_bytes} bytes)")
 ```
 
-### 4. Real-time streaming: Parallel Agent Mesh
+### 4. Parallel Agent Mesh
 
-This is what the SDK unlocks that the Cursor UI can't do. In the app, you run one agent at a time. With the SDK, you can **decompose a feature into subtasks, dispatch parallel agents, and have them cross-check each other's work in real time as each one finishes** — all from a single Python script.
+This is what the SDK unlocks that the Cursor UI can't do. In the app, you run one agent at a time. With CursorConnect, you can **decompose a feature into subtasks, dispatch parallel agents, and have them cross-check each other's work in real time as each one finishes**.
 
-The key insight: as each agent completes, the `Mesh` orchestrator automatically broadcasts a summary of what it built to the agents still working. Those agents receive the update as their next turn and immediately run a conflict check against their own output. The last agent to finish has seen *everyone* else's work, so integration issues are caught and resolved during the build — not after it.
+The Mesh is an orchestration layer that manages the full lifecycle: concurrent dispatch, optional peer-to-peer broadcasting, and automatic cleanup. As each agent completes, the Mesh sends a summary of what it built to the agents still running, so they can reconcile conflicts against their own output before they finish. The last agent to complete has seen everyone else's work.
 
 ```python
 from cursorconnect import Mesh, CommonModels
@@ -157,16 +226,14 @@ rbac_task = MeshTask(
 
 with Mesh(
     cloud=CloudOptions(repos=[{"url": REPO}], autoCreatePR=True),
-    model=CommonModels.CLAUDE_4_6_SONNET,
-    cross_check=True,  # Enable real-time peer broadcast
+    model="claude-sonnet-4-6",
+    cross_check=True,
 ) as mesh:
-    
-    # You can add tasks using the .add() method or the + operator:
+
     mesh + auth_task + billing_task + rbac_task
 
     print("Dispatching 3 specialist agents in parallel...\n")
-    
-    # mesh() is a shorthand for mesh.run()
+
     for result in mesh():
         print(f"  {result.name}: {result.run_result.status} "
               f"({len(result.artifacts)} files produced)")
@@ -174,37 +241,39 @@ with Mesh(
 
 What happens at runtime:
 
-1. All three agents start building simultaneously — auth, billing, and RBAC.
-2. The **auth-agent** finishes first. The Mesh immediately sends a cross-check message to the billing and RBAC agents: *"Peer task 'auth-agent' finished... Please review your own work for any conflicts."*
-3. The **billing-agent** finishes next. The Mesh notifies the RBAC agent (the only one still working).
-4. The **rbac-agent** finishes last — but by now it has already seen both other agents' summaries. Its final pass automatically reconciles migration ordering, ensures its permission decorators compose correctly with the auth middleware, and avoids the route collisions the billing agent introduced.
-5. Finally, the context manager `with Mesh(...)` safely archives all created agents, ensuring no orphaned agents are left behind.
+1. All three agents start building simultaneously.
+2. The **auth-agent** finishes first. The Mesh immediately sends a cross-check message to billing and RBAC: *"Peer task 'auth-agent' finished... Please review your own work for any conflicts."*
+3. The **billing-agent** finishes next. The Mesh notifies the RBAC agent.
+4. The **rbac-agent** finishes last, but by now it has already seen both other agents' summaries. Its final pass reconciles migration ordering, ensures its permission decorators compose correctly with the auth middleware, and avoids route collisions the billing agent introduced.
+5. The context manager calls `agent.close()` on all created agents on exit, ensuring they are archived and resources are released.
 
-The result: a complex multi-system feature built in parallel, where **integration bugs are resolved during construction, not discovered afterward**, all with practically zero boilerplate.
+The result: a complex multi-system feature built in parallel, where integration bugs are resolved during construction rather than discovered afterward.
 
 ---
 
 ## Design Philosophy
 
-CursorConnect is built around a few core principles that shape every API decision.
-
 ### Agents, Runs, and Messages
 
 These three concepts form the backbone of the SDK:
 
-- **Agent** is a persistent AI coding session. Think of it as a developer you've hired: it has context, memory, and a workspace (your repo). You create one, give it instructions, and it gets to work. An agent can handle multiple rounds of conversation and persists between messages.
+- **Agent** is a persistent AI coding session. Think of it as a developer you've hired: it has context, memory, and a workspace. You create one, give it instructions, and it gets to work. An agent persists between messages and can handle multiple rounds of conversation.
 
-- **Run** is a single unit of work within an agent. Every time you send a message, a new run is created. The run streams its progress as events, eventually reaching a terminal state (`FINISHED`, `ERROR`, `CANCELLED`, or `EXPIRED`). You can stream it, wait for it, or cancel it.
+- **Run** is a single unit of work within an agent. Every time you send a message, a new run is created (satisfying the `RunProtocol`). The run streams its progress as events, eventually reaching a terminal state (`FINISHED`, `ERROR`, `CANCELLED`, or `EXPIRED`). You can stream it, wait for it, or cancel it.
 
-- **Messages** are the typed events that flow back from a run. Rather than giving you raw JSON blobs, CursorConnect parses every Server-Sent Event into a specific Python dataclass. When the agent is reasoning, you get a `ThinkingMessage`. When it speaks, you get an `AssistantMessage`. When it invokes a tool (editing a file, running a command), you get a `ToolUseMessage`. Every event exposes a `type` property that returns its own class, so you can identify events with clean `event.type is AssistantMessage` checks instead of verbose `isinstance()` calls.
+- **Messages** are the typed events that flow back from a run. Rather than giving you raw JSON, CursorConnect parses every event into a specific Python dataclass. When the agent is reasoning, you get a `ThinkingMessage`. When it speaks, an `AssistantMessage`. When it invokes a tool, a `ToolUseMessage`. Every event exposes a `type` property that returns its own class, enabling clean `event.type is AssistantMessage` checks instead of verbose `isinstance()` calls.
+
+### Runtime-Agnostic by Design
+
+The SDK is built around a structural `RunProtocol` that decouples the agent domain model from the transport layer. The cloud runtime speaks HTTP to Cursor's REST API. The local runtime bridges to the TypeScript SDK via a Node.js subprocess. Both present the same interface, so switching between them doesn't require rewriting your orchestration logic.
 
 ### Typed All the Way Down
 
-Every API response is deserialized into a Python dataclass with explicit fields, not a nested dictionary you have to spelunk through. Model configurations, repository metadata, conversation turns, run results, and artifacts all have dedicated types with documented fields. This means fewer runtime surprises and full IDE support from day one.
+Every API response is deserialized into a Python dataclass with explicit fields, not a nested dictionary you have to spelunk through. Model configurations, repository metadata, conversation turns, run results, and artifacts all have dedicated types with documented fields. This means fewer runtime surprises and full IDE autocompletion from day one.
 
 ### Minimal Dependencies, Maximum Clarity
 
-The entire SDK depends only on `requests`. No async framework lock-in, no heavy abstractions, no magic. The `Agent` class is the entry point for everything agent-related. The `Cursor` namespace handles account-level queries. The `Run` object gives you full control over execution. Three concepts, three classes, and you're productive.
+The entire SDK depends only on `requests` for the cloud runtime. No async framework lock-in, no heavy abstractions, no magic. The `Agent` class is the entry point for agent work. The `Cursor` namespace handles account-level queries. The `Mesh` orchestrates parallel execution. The `Run` gives you full control over individual units of work. Four concepts, and you're productive.
 
 ### Errors That Tell You What to Do
 
@@ -242,9 +311,9 @@ def review_pr(repo_url: str, branch: str):
     result = run.wait(timeout=300)
 
     if result.status == "FINISHED" and result.conversation:
-        last_turn = result.conversation[-1]
-        print("Review complete:")
-        print(last_turn)
+        print(f"Review complete ({len(result.conversation)} turns):\n")
+        # .text gives you all assistant text concatenated across turns
+        print(result.conversation.text)
     elif result.status == "ERROR":
         print(f"Review failed: {result.error_message}")
 
@@ -277,7 +346,7 @@ for repo in repos:
             repos=[{"url": repo}],
             autoCreatePR=True,
         ),
-        model=CommonModels.CLAUDE_4_6_SONNET,
+        model="claude-sonnet-4-6",
         name=f"structlog-migration-{repo.split('/')[-1]}",
     )
     agents.append(agent)
@@ -315,10 +384,45 @@ while True:
     print("Agent: ", end="")
     for event in run.stream():
         if event.type is AssistantMessage:
-            for block in event.message.get("content", []):
+            content = event.message.get("content", [])
+            for block in content:
                 if isinstance(block, dict) and block.get("type") == "text":
-                    print(block["text"], end="")
+                    print(block.get("text", ""), end="")
     print("\n")
+```
+
+### Reading Conversation History
+
+After a run completes, retrieve the full conversation as typed Python objects. The `Conversation` supports `print()`, `.text`, iteration, indexing, and `len()`:
+
+```python
+from cursorconnect import Agent
+from cursorconnect.types import LocalOptions
+from cursorconnect.types.conversation import AgentConversationTurn, AssistantContent
+
+agent = Agent.create(
+    prompt="Explain the observer pattern in three sentences.",
+    local=LocalOptions(cwd="/path/to/project"),
+    model="gemini-3-flash",
+)
+
+result = agent.initial_run.wait()
+conv = result.conversation
+
+# Quick: print the entire conversation
+print(conv)
+
+# Just the assistant's text across all turns
+print(conv.text)
+
+# Walk the structure for fine-grained access
+for turn in conv:
+    if isinstance(turn.turn, AgentConversationTurn):
+        for step in turn.turn.steps:
+            if isinstance(step.message, AssistantContent):
+                print(f"Assistant said: {step.message.text[:80]}...")
+
+agent.close()
 ```
 
 ### Downloading Build Artifacts
@@ -348,12 +452,13 @@ from cursorconnect import Agent
 from cursorconnect.types import CloudOptions
 import time
 
-run = Agent.prompt(
-    message="Run the full test suite and fix any failing tests",
-    cloud=CloudOptions(
-        repos=[{"url": "https://github.com/your-org/app"}],
-    ),
-)
+    run = Agent.prompt(
+        message="Run the full test suite and fix any failing tests",
+        cloud=CloudOptions(
+            repos=[{"url": "https://github.com/your-org/app"}],
+        ),
+        model="claude-sonnet-4-6",
+    )
 
 def on_status(new_status):
     timestamp = time.strftime("%H:%M:%S")
@@ -362,7 +467,7 @@ def on_status(new_status):
 run.on_status_change(on_status)
 
 for event in run.stream():
-    pass  # Status callbacks fire as events arrive
+    pass
 
 print(f"Final status: {run.status}")
 ```
@@ -424,36 +529,47 @@ print(f"Total agents across all pages: {len(all_agents)}")
 
 ## API Reference
 
-### `Agent` — The Core Interface
+### `Agent` -- The Core Interface
 
 | Method | Type | Returns | Description |
 |---|---|---|---|
-| `Agent.create(api_key, prompt, *, cloud, local, model, name)` | class | `Agent` | Create a new agent and enqueue its first run |
-| `Agent.prompt(api_key, message, *, cloud, local, model, name)` | class | `Run` | One-shot: create agent and return the initial run |
+| `Agent.create(prompt, *, api_key, cloud, local, model, name)` | class | `Agent` | Create a new agent and enqueue its first run |
+| `Agent.prompt(message, *, api_key, cloud, local, model, name)` | class | `RunProtocol` | One-shot: create agent and return the initial run |
 | `Agent.get(api_key, agent_id)` | class | `Agent` | Retrieve an existing agent by ID |
 | `Agent.resume(api_key, agent_id)` | class | `Agent` | Alias for `get` (semantic clarity for resumption) |
 | `Agent.list(api_key, *, limit, cursor, pr_url, include_archived)` | class | `ListResult[Agent]` | Paginated listing of your agents |
-| `agent.send(message, options)` | instance | `Run` | Send a follow-up message, get a new run |
-| `agent.reload()` | instance | `Agent` | Refresh metadata from the API |
-| `agent.archive()` / `agent.unarchive()` | instance | `None` | Toggle archived state |
+| `agent.send(message, options)` | instance | `RunProtocol` | Send a follow-up message, get a new run |
+| `agent.run(message, *, timeout, poll_interval)` | instance | `RunResult` | Send a message and block until completion |
+| `agent.reload()` | instance | `Agent` | Refresh metadata from the API (Cloud only) |
+| `agent.archive()` / `agent.unarchive()` | instance | `None` | Toggle archived state (Cloud only) |
 | `agent.close()` | instance | `None` | Archive the agent (alias) |
-| `agent.delete()` | instance | `None` | Permanently delete the agent |
-| `agent.list_artifacts()` | instance | `list[Artifact]` | List files produced by the agent |
-| `agent.download_artifact(path)` | instance | `str` | Get a presigned download URL |
+| `agent.delete()` | instance | `None` | Permanently delete the agent (Cloud only) |
+| `agent.list_artifacts()` | instance | `list[Artifact]` | List files produced by the agent (Cloud only) |
+| `agent.download_artifact(path)` | instance | `str` | Get a presigned download URL (Cloud only) |
+| `agent.initial_run` | property | `RunProtocol \| None` | The run created alongside the agent |
 
-### `Run` — Execution Control
+### `Run` -- Execution Control
 
 | Method / Property | Returns | Description |
 |---|---|---|
 | `run.stream()` | `Generator[Message]` | Yield typed SSE events in real time |
 | `run.wait(timeout, poll_interval)` | `RunResult` | Block until the run finishes |
 | `run.cancel()` | `None` | Cancel an active run |
-| `run.conversation()` | `list[ConversationTurn]` | Full conversation history for this run |
+| `run.conversation()` | `Conversation` | Full conversation history for this run |
 | `run.on_status_change(callback)` | `None` | Register a status-change listener |
 | `run.status` | `str \| None` | Current status (reactive property) |
 | `run.id` | `str \| None` | The run's unique identifier |
 
-### `Cursor` — Account Operations
+### `Mesh` -- Parallel Orchestration
+
+| Method / Property | Returns | Description |
+|---|---|---|
+| `Mesh(*, cloud, model, cross_check, cleanup, ...)` | `Mesh` | Create an orchestrator with shared config |
+| `mesh.add(task)` or `mesh + task` | `Mesh` | Register a `MeshTask` for execution |
+| `mesh.run(timeout)` or `mesh()` | `list[MeshResult]` | Dispatch all tasks and collect results |
+| `mesh.results` | `list[MeshResult]` | Access results after execution |
+
+### `Cursor` -- Account Operations
 
 | Method | Returns | Description |
 |---|---|---|
@@ -461,7 +577,11 @@ print(f"Total agents across all pages: {len(all_agents)}")
 | `Cursor.models.list(api_key)` | `list[ModelListItem]` | Available models with parameters and variants |
 | `Cursor.repositories.list(api_key)` | `list[Repository]` | Connected GitHub repositories |
 
-### `Artifact` — File Access
+### Local Runtime
+
+Local agents use the same `Agent` class. Pass `local=LocalOptions(...)` instead of `cloud=CloudOptions(...)` and the SDK handles everything internally through the Node.js bridge to the TypeScript SDK. No additional imports or setup required.
+
+### `Artifact` -- File Access
 
 | Method / Property | Returns | Description |
 |---|---|---|
@@ -493,6 +613,69 @@ if event.type is AssistantMessage:
 | `RequestMessage` | A request for additional input or confirmation |
 
 All event types share `agent_id` and `run_id` fields, so you can always identify which agent and run produced them.
+
+### Conversation & Structural Types
+
+These are not streaming events but typed containers you work with after a run completes:
+
+| Type | What It Represents |
+|---|---|
+| `Conversation` | Typed container for the full history of a run, returned by `run.conversation()` |
+| `ConversationTurn` | A single turn wrapping either an `AgentConversationTurn` or `ShellConversationTurn` |
+| `ConversationStep` | One step within an agent turn (assistant message, thinking, or tool call) |
+| `AssistantContent` | The assistant's text output within a conversation step |
+| `ThinkingContent` | The model's internal reasoning within a conversation step |
+| `ToolCallContent` | A tool invocation recorded as a conversation step |
+| `RunProtocol` | Structural protocol satisfied by both cloud `Run` and local `LocalRun` |
+| `ModelParameters` | Ergonomic builder for model params (e.g. `ModelParameters(thinking="high")`) |
+
+---
+
+## Configuration Types
+
+```python
+from cursorconnect import CommonModels
+from cursorconnect.types import (
+    CloudOptions,
+    LocalOptions,
+    ModelSelection,
+    ModelParameters,
+    ModelParameterValue,
+)
+
+# Cloud: agent runs on Cursor's infrastructure with access to a GitHub repo
+cloud = CloudOptions(
+    repos=[{"url": "https://github.com/org/repo", "startingRef": "main"}],
+    autoCreatePR=True,
+    workOnCurrentBranch=False,
+)
+
+# Local: agent runs on your machine with direct filesystem access
+local = LocalOptions(
+    cwd="/path/to/your/project",
+    settingSources=["project", "user"],
+)
+
+# Model selection: pass a string shorthand or a full ModelSelection
+agent1 = Agent.create(
+    prompt="Optimize the database queries",
+    cloud=cloud,
+    model="claude-sonnet-4-6",
+)
+
+# Use ModelSelection with thinking shorthand
+model = ModelSelection("claude-sonnet-4-6", thinking="high")
+
+# Or build parameters incrementally with ModelParameters
+params = ModelParameters()
+params.thinking = "high"
+agent2 = Agent.create(
+    prompt="Optimize the database queries",
+    cloud=cloud,
+    model=ModelSelection("claude-sonnet-4-6", params=params),
+    name="query-optimizer",
+)
+```
 
 ---
 
@@ -538,43 +721,6 @@ CursorAgentError             Base class for all SDK errors
 ```
 
 Every exception carries `message`, `is_retryable`, `code`, and `cause` attributes so you can build robust retry logic without guessing.
-
----
-
-## Configuration Types
-
-Use these dataclasses and constants to configure agent creation and messaging:
-
-```python
-from cursorconnect import CommonModels
-from cursorconnect.types import CloudOptions, ModelSelection, ModelParameterValue
-
-cloud = CloudOptions(
-    repos=[{"url": "https://github.com/org/repo", "startingRef": "main"}],
-    autoCreatePR=True,
-    workOnCurrentBranch=False,
-)
-
-# You can pass a raw string from CommonModels:
-agent1 = Agent.create(
-    prompt="Optimize the database queries",
-    cloud=cloud,
-    model=CommonModels.CLAUDE_4_6_SONNET,
-)
-
-# Or pass a full ModelSelection if you need custom parameters:
-model = ModelSelection(
-    id=CommonModels.CLAUDE_4_6_SONNET,
-    params=[ModelParameterValue(id="thinking", value="enabled")],
-)
-
-agent2 = Agent.create(
-    prompt="Optimize the database queries",
-    cloud=cloud,
-    model=model,
-    name="query-optimizer",
-)
-```
 
 ---
 

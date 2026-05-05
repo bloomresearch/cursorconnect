@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional, Any, Union
 
-from .options import CloudOptions
+from .options import CloudOptions, LocalOptions
 from .models import ModelSelection
 from .account import RunResult
 
@@ -28,13 +28,17 @@ class MeshTask:
     prompt : str
         The instruction for the agent to execute.
     cloud : Optional[CloudOptions], optional
-        Cloud options specific to this task. Overrides the Mesh's default cloud options.
+        Cloud options specific to this task. Overrides the Mesh's default.
+    local : Optional[LocalOptions], optional
+        Local options specific to this task. Overrides the Mesh's default.
+        When set (and ``cloud`` is not), the task runs locally.
     model : Optional[Union[str, ModelSelection]], optional
-        Model selection specific to this task. Overrides the Mesh's default model.
+        Model selection specific to this task. Overrides the Mesh's default.
     """
     name: str
     prompt: str
     cloud: Optional[CloudOptions] = None
+    local: Optional[LocalOptions] = None
     model: Optional[Union[str, ModelSelection]] = None
 
 

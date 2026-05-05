@@ -362,14 +362,14 @@ class TestAgentShimWrapperProxy:
         assert len(arts) == 1
 
     def test_wrapper_runs_get_returns_run(self, mock_http, api_key: str) -> None:
-        """``wrapper.runs.get(run_id)`` returns a ``Run`` with the correct ID."""
-        from cursorconnect import Run
+        """``wrapper.runs.get(run_id)`` returns a ``RunProtocol`` with the correct ID."""
+        from cursorconnect import RunProtocol
 
         mock_http(MockResponse(_AGENT_PAYLOAD))
         client = _make_client(api_key)
         wrapper = client.agents.get("bc-shim-001")
         run = wrapper.runs.get("run-shim-001")
-        assert isinstance(run, Run)
+        assert isinstance(run, RunProtocol)
         assert run.id == "run-shim-001"
 
     def test_wrapper_repr_delegates_to_agent(self, mock_http, api_key: str) -> None:

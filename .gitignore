@@ -77,3 +77,20 @@ api_testing.ipynb
 *.sqlite3
 pricing_cache.json
 review_tracker.txt
+
+# Ad-hoc test/debug scripts (not part of the test suite)
+test_app.py
+test_conv.py
+test_conversation_types.py
+test_local_quick.py
+test_mesh_simple.py
+test_single_audit.py
+test_manager.py
+mesh_audit.py
+live_test.py
+live_test_local.py
+list_models.py
+verify_exports.py
+
+# Plans (local working docs)
+*.plan.md

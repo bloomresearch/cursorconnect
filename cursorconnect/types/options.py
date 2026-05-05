@@ -97,14 +97,14 @@ class SendOptions:
         A callback for step updates, by default None.
     onDelta : Optional[Any], optional
         A callback for delta/update events, by default None.
-    local : Optional[dict], optional
-        Local-specific execution options, by default None.
+    local : Optional[LocalOptions], optional
+        Options for local execution, by default None.
     """
     model: Optional[Union[str, ModelSelection]] = None
     mcpServers: Optional[Dict[str, McpServerConfig]] = None
     onStep: Optional[Any] = None # (args: { step: unknown }) => void
     onDelta: Optional[Any] = None # (args: { update: InteractionUpdate }) => void
-    local: Optional[dict] = None # { force?: boolean; }
+    local: Optional[LocalOptions] = None
 
 @dataclass
 class ListResult(Generic[T]):

@@ -30,8 +30,8 @@ from .types import (
     StatusMessage,
     TaskMessage,
     RequestMessage,
-    ConversationTurn,
 )
+from .types.conversation import Conversation, parse_conversation
 from .types.account import RunResult
 from .exceptions import CursorAgentError, UnsupportedRunOperationError
 
@@ -370,9 +370,9 @@ class Run:
             self._refresh()
 
         try:
-            turns = self.conversation()
+            conv = self.conversation()
         except Exception:
-            turns = None
+            conv = None
 
         error_msg: Optional[str] = None
         if self._status == "ERROR":
@@ -385,7 +385,7 @@ class Run:
         return RunResult(
             run_id=self.id or "",
             status=self._status or "",
-            conversation=turns,
+            conversation=conv,
             error_message=error_msg,
         )
 
@@ -418,21 +418,21 @@ class Run:
     # Conversation history
     # ------------------------------------------------------------------
 
-    def conversation(self) -> List[ConversationTurn]:
+    def conversation(self) -> Conversation:
         """
-        Retrieve the full conversation history for this run.
+        Retrieve the full conversation history for this run as typed objects.
 
         Returns
         -------
-        list of ConversationTurn
-            Ordered list of conversation turns.  Each turn is a ``dict``
-            with a ``type`` key (``"agentConversationTurn"`` or
-            ``"shellConversationTurn"``) and a ``turn`` payload.
+        Conversation
+            A :class:`~cursorconnect.types.conversation.Conversation` that
+            supports iteration, indexing, ``len()``, and ``print()``.
         """
         resp = self._client._get(
             f"/agents/{self.agent_id}/runs/{self.id}/conversation"
         )
-        return resp.get("turns", resp.get("items", []))
+        raw_turns = resp.get("turns", resp.get("items", []))
+        return parse_conversation(raw_turns)
 
     # ------------------------------------------------------------------
     # Internal helpers

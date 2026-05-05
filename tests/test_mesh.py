@@ -79,6 +79,9 @@ class DummyAgent:
     def list_artifacts(self):
         return []
 
+    def close(self):
+        self.archived = True
+
     def archive(self):
         self.archived = True
 
