@@ -9,7 +9,7 @@ source-level intent, constraints, and troubleshooting notes for maintainers.
 | Module | Responsibility | Public surface |
 |---|---|---|
 | `cursorconnect.__init__` | Package exports and quick-start docstring. | `Agent`, `Run`, `Cursor`, `Mesh`, `Artifact`, `CommonModels`, exceptions. |
-| `cursorconnect.agent` | High-level Cursor Cloud agent facade. | Agent creation, listing, resumption, follow-up runs, artifacts, archival, deletion. |
+| `cursorconnect.agent` | High-level agent facade. | Agent creation, listing, resumption, follow-up runs, artifacts, archival, deletion. |
 | `cursorconnect.run` | Single-run lifecycle and SSE parsing. | Streaming, blocking wait, cancellation, conversation history, status listeners. |
 | `cursorconnect.cursor` | Account-level namespace. | `Cursor.me()`, `Cursor.models.list()`, `Cursor.repositories.list()`. |
 | `cursorconnect.mesh` | Multi-agent orchestration. | Concurrent task execution, optional peer cross-checking, context-manager cleanup. |
@@ -17,12 +17,16 @@ source-level intent, constraints, and troubleshooting notes for maintainers.
 | `cursorconnect.client` | Deprecated compatibility shim plus HTTP transport. | Legacy `CursorClient`; modern modules still use its `_get`, `_post`, and `_delete` helpers internally. |
 | `cursorconnect.types` | Dataclass models for API payloads. | Options, models, messages, conversation turns, run results, repositories, MCP config. |
 | `cursorconnect.exceptions` | Error hierarchy and HTTP status mapping. | `CursorAgentError` and specialized subclasses with `is_retryable` and `code`. |
-| `cursorconnect._bridge` | Private Node.js bridge to `@cursor/sdk`. | Internal `BridgeManager`; not exported as a stable public API. |
+| `cursorconnect.runtimes` | Runtime backend protocol and concrete backend implementations. | `RuntimeBackend`, `CloudRuntime`; the protocol explicitly anticipates cloud, local, and mock backends. |
+| `cursorconnect._bridge` | Local Node.js bridge to `@cursor/sdk`. | Internal `BridgeManager` used by local-runtime experiments and tests; not exported as a stable public API. |
 
 ## Architecture
 
-CursorConnect exposes a small synchronous Python API over Cursor Cloud agent
-operations:
+CursorConnect exposes a small Python API over Cursor agent operations. The
+current public facade is synchronous for REST-backed cloud calls, while the
+local integration path is represented by the TypeScript SDK bridge in
+`cursorconnect._bridge` and by `LocalOptions` dataclasses that mirror the SDK
+runtime contract.
 
 1. `Agent.create()` builds a JSON payload from `CloudOptions`, model selection,
    and the initial prompt, then posts to `/agents`.
@@ -42,6 +46,31 @@ The package intentionally keeps the public model compact:
 - `Run` owns execution lifecycle.
 - `Cursor` owns account-level reads.
 - `Mesh` coordinates multiple `Agent` instances for parallel work.
+- `RuntimeBackend` defines the backend boundary for cloud, local, and test
+  runtimes.
+
+### Runtime selection and local integration
+
+The codebase carries both cloud and local runtime concepts:
+
+- `CloudOptions` configures Cursor Cloud execution by forwarding repository,
+  environment, branch, and PR fields to the REST API.
+- `LocalOptions` models local execution settings from the Cursor TypeScript SDK:
+  `cwd`, `settingSources`, and `sandboxOptions`.
+- `cursorconnect._bridge.manager.BridgeManager` starts `cursorconnect/_bridge/bridge.js`
+  as a Node.js subprocess. The bridge loads `@cursor/sdk`, sends newline-delimited
+  JSON requests over stdin, and streams responses back over stdout.
+- `live_test_local.py` exercises that bridge by creating a local SDK agent,
+  sending a prompt, streaming `run.stream()`, waiting with `run.wait()`, and
+  closing the agent.
+- `cursorconnect.runtimes.base.RuntimeBackend` is the structural contract for
+  backend implementations, and `cursorconnect.runtimes.cloud.CloudRuntime`
+  implements the cloud REST backend.
+
+When documenting local behavior, keep the distinction precise: local execution
+is set up through the SDK bridge and local option types, while the high-level
+`Agent.create()` implementation in `cursorconnect.agent` currently serializes
+cloud REST payload fields directly.
 
 ## Public workflows
 
@@ -76,10 +105,79 @@ Constraints:
 - `Agent.create()` and `Agent.prompt()` currently include `api_key` in their
   signatures. Internally, falsey values fall back to `CURSOR_API_KEY`, but
   examples should pass an explicit key for clarity.
-- `LocalOptions` is accepted for forward compatibility; the current Cloud path
-  does not serialize local execution options.
+- `LocalOptions` mirrors the local runtime contract from `@cursor/sdk`. Use it
+  when documenting local execution settings (`cwd`, `settingSources`,
+  `sandboxOptions`) and keep those settings distinct from REST-only cloud
+  payload fields.
 - `CloudOptions.repos` entries are forwarded as dictionaries. Keep field names
   in API wire format, for example `startingRef` and `prUrl`.
+
+### Run a local SDK agent through the Node bridge
+
+The local runtime path is exercised through `BridgeManager`, which wraps
+`cursorconnect/_bridge/bridge.js` and delegates to `@cursor/sdk`. Use this path
+when a workflow should run against a local checkout rather than a cloned cloud
+repository.
+
+```python
+import asyncio
+import os
+from pathlib import Path
+
+from cursorconnect._bridge.manager import BridgeManager
+
+
+async def main() -> None:
+    bridge_path = Path("cursorconnect/_bridge/bridge.js").resolve()
+    manager = BridgeManager(bridge_path=str(bridge_path))
+
+    try:
+        created = await manager.send_request(
+            "Agent.create",
+            args=[{
+                "apiKey": os.environ["CURSOR_API_KEY"],
+                "model": {"id": "composer-2"},
+                "local": {
+                    "cwd": str(Path.cwd()),
+                    "settingSources": [],
+                    "sandboxOptions": {"enabled": True},
+                },
+            }],
+        )
+        agent_id = created["agentId"]
+
+        run_created = await manager.send_request(
+            "agent.send",
+            target=agent_id,
+            args=["Inspect this checkout and summarize the package layout."],
+        )
+        run_id = run_created["runId"]
+
+        async for update in manager.stream_request("run.stream", target=run_id):
+            print(update)
+
+        result = await manager.send_request("run.wait", target=run_id)
+        print(result)
+
+        await manager.send_request("agent.close", target=agent_id)
+    finally:
+        manager.close()
+
+
+asyncio.run(main())
+```
+
+Operational notes:
+
+- Install JavaScript dependencies with `npm install` before using the bridge;
+  `bridge.js` requires `@cursor/sdk`.
+- `BridgeManager.start()` performs a `node --version` health check and raises
+  `RuntimeError` when Node.js is unavailable.
+- Requests and stream events are newline-delimited JSON on stdin/stdout. Bridge
+  responses use in-process IDs such as `agent_1` and `run_2`; these are bridge
+  handles, not cloud `bc-...` agent IDs.
+- Always close both the SDK agent (`agent.close`) and the manager process to
+  avoid leaked local executor resources.
 
 ### Stream typed run events
 
@@ -169,6 +267,17 @@ pytest
 The test suite mocks `requests.Session.request` for unit tests. Slow tests create
 live agents and are expected to clean them up with `delete()`.
 
+Local bridge smoke tests are separate from the mocked REST unit tests:
+
+```bash
+npm install
+export CURSOR_API_KEY="crsr_..."
+python3 live_test_local.py
+```
+
+`live_test_local.py` requires a working Node.js runtime and real Cursor SDK
+credentials because it launches `@cursor/sdk` through the bridge.
+
 ## Troubleshooting
 
 ### Missing API key
@@ -201,7 +310,7 @@ should use `Agent`, `Run`, and `Cursor` directly. The shim remains in place for
 legacy code and for the shared HTTP transport used by the current public
 facades.
 
-### Private TypeScript SDK bridge
+### Local TypeScript SDK bridge
 
 `cursorconnect._bridge` starts a Node.js subprocess that loads `@cursor/sdk` and
 communicates over newline-delimited JSON. It requires:
@@ -211,6 +320,5 @@ communicates over newline-delimited JSON. It requires:
 - A CommonJS-compatible `@cursor/sdk` import path.
 
 Bridge failures are surfaced as `RuntimeError` on pending requests or stream
-consumers. Because `_bridge` is private and not exported by the package, public
-documentation and examples should prefer the Python `Agent` facade unless the
-bridge is being developed directly.
+consumers. For local workflows, verify Node.js, JavaScript dependencies, and the
+SDK import before debugging Python call sites.

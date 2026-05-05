@@ -499,7 +499,7 @@ All event types share `agent_id` and `run_id` fields, so you can always identify
 
 ## Developer Documentation
 
-For maintainers and SDK integrators, see the [CursorConnect developer guide](docs/cursorconnect.md). It documents the package by Python module, including agent/run lifecycle flow, Mesh orchestration, setup and testing commands, and operational troubleshooting for API keys, rate limits, artifacts, deprecated shims, and the private TypeScript SDK bridge.
+For maintainers and SDK integrators, see the [CursorConnect developer guide](docs/cursorconnect.md). It documents the package by Python module, including agent/run lifecycle flow, local Node bridge behavior, Mesh orchestration, setup and testing commands, and operational troubleshooting for API keys, rate limits, artifacts, deprecated shims, and the TypeScript SDK bridge.
 
 ---
 
