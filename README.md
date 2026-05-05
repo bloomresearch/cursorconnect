@@ -21,7 +21,8 @@
   <a href="#two-runtimes-one-interface">Runtimes</a> &middot;
   <a href="#design-philosophy">Design Philosophy</a> &middot;
   <a href="#examples">Examples</a> &middot;
-  <a href="#api-reference">API Reference</a>
+  <a href="#api-reference">API Reference</a> &middot;
+  <a href="#module-docs">Module Docs</a>
 </p>
 
 ---
@@ -97,7 +98,7 @@ agent = Agent.create(
 
 ### Local Runtime
 
-Local agents run as a subprocess on your machine via a Node.js bridge to the TypeScript `@cursor/sdk`. The agent operates directly on your local filesystem, which means it can access private files, work offline, and integrate with local tooling, dev servers, and databases that aren't reachable from the cloud.
+Local agents run as a subprocess on your machine via a Node.js bridge to the TypeScript `@cursor/sdk`. The agent operates directly on your local filesystem, which means it can access private files and integrate with local tooling, dev servers, and databases that aren't reachable from the cloud.
 
 ```python
 from cursorconnect import Agent
@@ -116,7 +117,11 @@ if run:
     print(f"Done: {result.status}")
 ```
 
-Same `Agent` class, same `Run` interface, same `stream()` and `wait()` methods. The SDK detects that you passed `local` instead of `cloud` and routes through the Node.js bridge automatically. Under the hood, the bridge communicates with the TypeScript SDK over JSON-RPC via stdin/stdout, handles streaming, and automatically restarts if the subprocess crashes.
+Same `Agent` class, same `Run` interface, same `stream()` and `wait()` methods. The SDK detects that you passed `local` instead of `cloud` and routes through the Node.js bridge automatically. Under the hood, the bridge communicates with the TypeScript SDK using newline-delimited JSON over stdin/stdout, handles streaming, and automatically restarts if the subprocess crashes.
+
+For the module-level runtime contract and local bridge runbook, see
+[`docs/cursorconnect/agent-runtime.md`](docs/cursorconnect/agent-runtime.md) and
+[`docs/cursorconnect/local-runtime.md`](docs/cursorconnect/local-runtime.md).
 
 ### When to Use Which
 
@@ -124,9 +129,8 @@ Same `Agent` class, same `Run` interface, same `stream()` and `wait()` methods. 
 |---|---|---|
 | **Setup** | API key only | Node.js + `@cursor/sdk` |
 | **Filesystem** | Clones from GitHub | Direct access to local files |
-| **Network** | Runs on Cursor's infra | Runs on your machine |
+| **Network** | Runs on Cursor's infra | Runs on your machine with access to local resources |
 | **Best for** | CI/CD pipelines, batch operations across repos, PR automation | Interactive development, private codebases, local tool integration |
-| **Offline** | No | Yes |
 
 ---
 
@@ -597,6 +601,9 @@ print(f"Total agents across all pages: {len(all_agents)}")
 
 Local agents use the same `Agent` class. Pass `local=LocalOptions(...)` instead of `cloud=CloudOptions(...)` and the SDK handles everything internally through the Node.js bridge to the TypeScript SDK. No additional imports or setup required.
 
+For setup internals, diagnostics, and troubleshooting, see
+[`docs/cursorconnect/local-runtime.md`](docs/cursorconnect/local-runtime.md).
+
 ### `Artifact` -- File Access
 
 | Method / Property | Returns | Description |
@@ -605,6 +612,18 @@ Local agents use the same `Agent` class. Pass `local=LocalOptions(...)` instead 
 | `artifact.size_bytes` | `int` | File size |
 | `artifact.get_download_url()` | `str` | Presigned S3 URL (valid ~15 min) |
 | `artifact.download_content()` | `bytes` | Raw file content |
+
+---
+
+## Module Docs
+
+Focused, module-aligned documentation lives under `docs/cursorconnect/`:
+
+- [`agent-runtime.md`](docs/cursorconnect/agent-runtime.md) documents the
+  shared `Agent` / `RunProtocol` contract across cloud and local execution.
+- [`local-runtime.md`](docs/cursorconnect/local-runtime.md) documents the
+  `cursorconnect._bridge` setup lifecycle, bridge protocol, and local runtime
+  troubleshooting.
 
 ---
 
