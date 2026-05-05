@@ -10,6 +10,13 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/cursorconnect/"><img alt="PyPI Version" src="https://img.shields.io/pypi/v/cursorconnect?color=blue"></a>
+  <a href="https://pypi.org/project/cursorconnect/"><img alt="Python Versions" src="https://img.shields.io/pypi/pyversions/cursorconnect"></a>
+  <a href="https://github.com/bloomresearch/cursorconnect/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/bloomresearch/cursorconnect"></a>
+  <a href="https://github.com/bloomresearch/cursorconnect/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/bloomresearch/cursorconnect?style=social"></a>
+</p>
+
+<p align="center">
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#two-runtimes-one-interface">Runtimes</a> &middot;
   <a href="#design-philosophy">Design Philosophy</a> &middot;
@@ -46,7 +53,7 @@ pip install cursorconnect
 Or install from source:
 
 ```bash
-git clone https://github.com/your-org/cursorconnect.git
+git clone https://github.com/bloomresearch/cursorconnect.git
 cd cursorconnect
 pip install -e .
 ```
@@ -78,6 +85,8 @@ agent = Agent.create(
     ),
 )
 ```
+
+> See more examples in the [Examples](#examples) section, or browse the full [API Reference](#api-reference).
 
 ### Local Runtime
 
@@ -747,7 +756,7 @@ echo "CURSOR_API_KEY=crsr_your_key_here" > .env
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](https://github.com/bloomresearch/cursorconnect/blob/main/LICENSE) for details.
 
 ---
 

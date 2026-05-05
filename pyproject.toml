@@ -5,21 +5,55 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cursorconnect"
 version = "0.1.0"
-description = "Python SDK for CursorConnect"
+description = "Unofficial Python SDK for Cursor AI agents -- create, stream, orchestrate, and manage cloud and local coding agents from Python."
 readme = "README.md"
 requires-python = ">=3.8"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
     { name = "Joshua Reed" },
 ]
+keywords = [
+    "cursor",
+    "cursor-sdk",
+    "cursor-ai",
+    "ai-agent",
+    "ai-agents",
+    "coding-agent",
+    "code-generation",
+    "llm",
+    "agent-orchestration",
+    "multi-agent",
+    "developer-tools",
+    "automation",
+    "sdk",
+    "python-sdk",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
+    "Typing :: Typed",
 ]
 dependencies = [
     "requests>=2.28",
 ]
+
+[project.urls]
+Homepage = "https://github.com/bloomresearch/cursorconnect"
+Documentation = "https://github.com/bloomresearch/cursorconnect#readme"
+Repository = "https://github.com/bloomresearch/cursorconnect"
+Issues = "https://github.com/bloomresearch/cursorconnect/issues"
+Changelog = "https://github.com/bloomresearch/cursorconnect/releases"
 
 [project.optional-dependencies]
 test = [

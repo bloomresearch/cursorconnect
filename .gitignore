@@ -94,3 +94,5 @@ verify_exports.py
 
 # Plans (local working docs)
 *.plan.md
+pyproject.toml
+
