@@ -13,6 +13,7 @@
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#two-runtimes-one-interface">Runtimes</a> &middot;
   <a href="#design-philosophy">Design Philosophy</a> &middot;
+  <a href="#module-map">Module Map</a> &middot;
   <a href="#examples">Examples</a> &middot;
   <a href="#api-reference">API Reference</a>
 </p>
@@ -53,7 +54,7 @@ pip install -e .
 
 **Requirements:** Python 3.8+ and `requests>=2.28` (installed automatically).
 
-**For local agents only:** Node.js 18+ and the `@cursor/sdk` npm package must be available on your system. Cloud agents have no additional requirements.
+**For local agents only:** Node.js 18+ must be available as `node`, and the `@cursor/sdk` npm package must be resolvable by that Node.js process. Cloud agents have no additional requirements.
 
 ---
 
@@ -100,7 +101,16 @@ if run:
     print(f"Done: {result.status}")
 ```
 
-Same `Agent` class, same `Run` interface, same `stream()` and `wait()` methods. The SDK detects that you passed `local` instead of `cloud` and routes through the Node.js bridge automatically. Under the hood, the bridge communicates with the TypeScript SDK over JSON-RPC via stdin/stdout, handles streaming, and automatically restarts if the subprocess crashes.
+Same `Agent` class, same `Run` interface, same `stream()` and `wait()` methods. The SDK detects that you passed `local` instead of `cloud` and routes through the Node.js bridge automatically. Under the hood, the bridge communicates with the TypeScript SDK over newline-delimited JSON on stdin/stdout, translates TypeScript SDK events into typed Python messages, and restarts the subprocess when a later request sees that it has exited.
+
+#### Local runtime operating model
+
+- `Agent.create(..., local=LocalOptions(...))` starts a shared `BridgeManager` singleton, calls TypeScript `Agent.create(options)`, then sends the initial prompt with event streaming enabled.
+- `LocalOptions.cwd` is forwarded to the TypeScript SDK as the local working directory. Pass an explicit project path in automation so the bridge does not inherit an unexpected process cwd.
+- `LocalOptions.settingSources` and `sandboxOptions` are forwarded as-is; leave them unset unless the caller intentionally wants Cursor settings or sandbox behavior from the local environment.
+- `LocalRun.stream()` is synchronous from Python's perspective, but internally pumps the TypeScript async stream through a background thread so messages yield incrementally. Breaking out of the generator early cancels the pump task.
+- `LocalRun.wait(timeout=..., poll_interval=...)` accepts the same signature as cloud `Run.wait()` for `RunProtocol` compatibility, but the local implementation delegates directly to the TypeScript SDK's `run.wait()` and does not use Python polling options.
+- Cloud-only agent operations (`reload`, `archive`, `unarchive`, `delete`, `list_artifacts`, `download_artifact`) raise `UnsupportedRunOperationError` for local agents. Use `agent.close()` to release a local agent.
 
 ### When to Use Which
 
@@ -110,7 +120,9 @@ Same `Agent` class, same `Run` interface, same `stream()` and `wait()` methods. 
 | **Filesystem** | Clones from GitHub | Direct access to local files |
 | **Network** | Runs on Cursor's infra | Runs on your machine |
 | **Best for** | CI/CD pipelines, batch operations across repos, PR automation | Interactive development, private codebases, local tool integration |
-| **Offline** | No | Yes |
+| **Offline** | No | Filesystem access is local; model/auth connectivity depends on the TypeScript SDK runtime |
+| **Artifacts API** | `list_artifacts()` / `download_artifact()` | Not supported |
+| **Lifecycle cleanup** | `archive()`, `delete()`, or `close()` | `close()` |
 
 ---
 
@@ -282,6 +294,65 @@ Every HTTP error is mapped to a specific exception subclass with an `is_retryabl
 ### Environment-First Authentication
 
 Every method that needs an API key accepts an optional `api_key` parameter. If you omit it, the SDK automatically reads `CURSOR_API_KEY` from your environment. This means zero credential management in application code while still allowing explicit overrides for multi-tenant or testing scenarios.
+
+---
+
+## Module Map
+
+The public documentation follows the Python package structure so you can move from a concept to the source quickly.
+
+| Module | Public surface | Intent and responsibilities |
+|---|---|---|
+| `cursorconnect.agent` | `Agent` | Runtime selection, agent creation, follow-up messages, cloud lifecycle operations, artifact access, and local bridge handoff. |
+| `cursorconnect.run` | `Run` | Cloud run control: typed SSE parsing, status listeners, polling `wait()`, cancellation, and conversation retrieval. |
+| `cursorconnect._bridge.manager` | `BridgeManager` | Internal local-runtime subprocess manager. Spawns `node cursorconnect/_bridge/bridge.js`, sends newline-delimited JSON requests, routes stream events, and fails pending requests if the bridge exits. |
+| `cursorconnect._bridge.local_run` | `LocalRun` | Local run adapter that satisfies `RunProtocol`, converts bridge events into typed messages, and exposes synchronous `stream()`, `wait()`, `cancel()`, and `conversation()` methods. |
+| `cursorconnect.mesh` | `Mesh` | Parallel orchestration for multiple `MeshTask` objects, including runtime defaults, task-level overrides, optional peer cross-checking, and context-manager cleanup. |
+| `cursorconnect.cursor` | `Cursor` | Account-level reads such as current user, available models, and connected repositories. |
+| `cursorconnect.artifact` | `Artifact` | Cloud artifact metadata and presigned download helpers. |
+| `cursorconnect.types.*` | `CloudOptions`, `LocalOptions`, `ModelSelection`, `Conversation`, `RunProtocol`, messages, results | Dataclasses and protocols shared by the facade, cloud runtime, local runtime, and Mesh. |
+| `cursorconnect.exceptions` | `CursorAgentError` and subclasses | Actionable exception hierarchy with retryability and error-code metadata. |
+
+### Runtime capability matrix
+
+| Capability | Cloud `Run` / `Agent` | Local `LocalRun` / `Agent` |
+|---|---|---|
+| Create with initial prompt | `Agent.create(..., cloud=CloudOptions(...))` | `Agent.create(..., local=LocalOptions(...))` |
+| One-shot prompt | `Agent.prompt(..., cloud=...)` | `Agent.prompt(..., local=...)` |
+| Follow-up message | `agent.send(...)` | `agent.send(...)` |
+| Stream typed messages | HTTP SSE in `Run.stream()` | Node bridge async stream pumped by `LocalRun.stream()` |
+| Wait for terminal result | Python polling over cloud run list | Delegates to TypeScript SDK `run.wait()` |
+| Conversation history | `GET /conversation` parsed into `Conversation` | Bridge `run.conversation` parsed into `Conversation` |
+| Cancel active run | Cloud cancel endpoint | Bridge `run.cancel` |
+| Agent reload/archive/delete | Supported | Not supported; use `agent.close()` |
+| Artifacts | Supported | Not supported |
+
+### Mesh runtime selection
+
+`Mesh` applies runtime configuration in this order:
+
+1. A `MeshTask` with `local=...` or `cloud=...` uses that task-specific runtime.
+2. A task without runtime options inherits the `Mesh(local=...)` or `Mesh(cloud=...)` default.
+3. If a malformed task ends up with both local and cloud options, Mesh drops `cloud` before calling `Agent.create()`, matching the source guard that makes local execution take precedence inside the worker.
+
+```python
+from cursorconnect import Mesh
+from cursorconnect.types import CloudOptions, LocalOptions, MeshTask
+
+with Mesh(
+    cloud=CloudOptions(repos=[{"url": "https://github.com/org/repo"}]),
+    cross_check=True,
+) as mesh:
+    mesh.add("cloud-task", "Run against the GitHub clone")
+    mesh.add(
+        MeshTask(
+            name="local-task",
+            prompt="Inspect the checked-out workspace directly",
+            local=LocalOptions(cwd="/workspace/repo"),
+        )
+    )
+    results = mesh.run(timeout=600)
+```
 
 ---
 
@@ -564,10 +635,10 @@ print(f"Total agents across all pages: {len(all_agents)}")
 
 | Method / Property | Returns | Description |
 |---|---|---|
-| `Mesh(*, cloud, model, cross_check, cleanup, ...)` | `Mesh` | Create an orchestrator with shared config |
+| `Mesh(*, cloud, local, model, cross_check, cleanup, ...)` | `Mesh` | Create an orchestrator with shared runtime and model config |
 | `mesh.add(task)` or `mesh + task` | `Mesh` | Register a `MeshTask` for execution |
 | `mesh.run(timeout)` or `mesh()` | `list[MeshResult]` | Dispatch all tasks and collect results |
-| `mesh.results` | `list[MeshResult]` | Access results after execution |
+| `mesh.results()` | `list[MeshResult]` | Access results after execution |
 
 ### `Cursor` -- Account Operations
 
@@ -579,7 +650,15 @@ print(f"Total agents across all pages: {len(all_agents)}")
 
 ### Local Runtime
 
-Local agents use the same `Agent` class. Pass `local=LocalOptions(...)` instead of `cloud=CloudOptions(...)` and the SDK handles everything internally through the Node.js bridge to the TypeScript SDK. No additional imports or setup required.
+Local agents use the same `Agent` class. Pass `local=LocalOptions(...)` instead of `cloud=CloudOptions(...)` and the SDK handles Python-side routing through the Node.js bridge to the TypeScript SDK. The local runtime still requires Node.js and a resolvable `@cursor/sdk` installation.
+
+Operational constraints:
+
+- `node --version` must succeed before the bridge starts, and `require("@cursor/sdk")` must work from the bridge process.
+- The Python package does not install `@cursor/sdk`; install it in the project or another Node resolution path visible to `node`.
+- Local agent IDs and run IDs are bridge-local handles such as `agent_1` and `run_2`, not cloud `bc-...` IDs.
+- `Agent.get()`, `Agent.resume()`, `Agent.list()`, artifact APIs, and archive/delete lifecycle operations are cloud API operations. They do not rehydrate local bridge state.
+- `Agent.create()` rejects calls that pass both `cloud` and `local`. Mesh task execution has an additional guard for malformed task objects and routes those tasks locally.
 
 ### `Artifact` -- File Access
 
