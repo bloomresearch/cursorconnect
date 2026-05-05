@@ -15,6 +15,7 @@
   <a href="#design-philosophy">Design Philosophy</a> &middot;
   <a href="#examples">Examples</a> &middot;
   <a href="#api-reference">API Reference</a> &middot;
+  <a href="#developer-documentation">Developer Documentation</a> &middot;
   <a href="#error-handling">Error Handling</a>
 </p>
 
@@ -493,6 +494,12 @@ if event.type is AssistantMessage:
 | `RequestMessage` | A request for additional input or confirmation |
 
 All event types share `agent_id` and `run_id` fields, so you can always identify which agent and run produced them.
+
+---
+
+## Developer Documentation
+
+For maintainers and SDK integrators, see the [CursorConnect developer guide](docs/cursorconnect.md). It documents the package by Python module, including agent/run lifecycle flow, Mesh orchestration, setup and testing commands, and operational troubleshooting for API keys, rate limits, artifacts, deprecated shims, and the private TypeScript SDK bridge.
 
 ---
 
